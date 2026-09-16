@@ -19,7 +19,6 @@ from sqlalchemy.orm import sessionmaker, Session
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
-    # Si no hay variable de entorno, usa SQLite local en un archivo persistente
     DATABASE_URL = "sqlite:///./pcl_database.db"
 
 if DATABASE_URL.startswith("postgres://"):
@@ -27,6 +26,7 @@ if DATABASE_URL.startswith("postgres://"):
 
 engine = create_engine(
     DATABASE_URL, 
+    pool_pre_ping=True,
     connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -95,7 +95,6 @@ class AuditModel(Base):
     comments = Column(Text, nullable=False)
     assigned_to_info = Column(String(100), nullable=True)
 
-# CREAR LAS TABLAS EN LA BASE DE DATOS AUTOMÁTICAMENTE
 Base.metadata.create_all(bind=engine)
 
 # SEMBRAR USUARIOS POR DEFECTO SI LA TABLA ESTÁ VACÍA
@@ -148,7 +147,7 @@ db_init.close()
 # APLICACIÓN FASTAPI Y LÓGICA DE NEGOCIO
 # =============================================================
 
-app = FastAPI(title="Sistema de Gestión PCL - Base de Datos Persistente")
+app = FastAPI(title="Sistema de Gestión PCL - Administración Completa de Usuarios")
 
 ACTIVE_SESSIONS: Dict[str, str] = {}
 
@@ -262,7 +261,7 @@ STATE_TRANSITIONS_MATRIX = [
     }
 ]
 
-# API USUARIOS
+# API USUARIOS - CREAR
 @app.post("/api/users/create")
 def create_user(
     name: str = Form(...),
@@ -279,6 +278,45 @@ def create_user(
     
     new_user = UserModel(name=name.strip(), email=clean_email, password=password.strip(), role=role)
     db.add(new_user)
+    db.commit()
+    db.close()
+    return {"success": True}
+
+# API USUARIOS - EDITAR PERMISOS/ROL
+@app.post("/api/users/update")
+def update_user_role(
+    email: str = Form(...),
+    role: str = Form(...)
+):
+    db = SessionLocal()
+    clean_email = email.strip().lower()
+    user = db.query(UserModel).filter(UserModel.email == clean_email).first()
+    if not user:
+        db.close()
+        raise HTTPException(status_code=404, detail="Usuario no encontrado.")
+    
+    user.role = role
+    db.commit()
+    db.close()
+    return {"success": True}
+
+# API USUARIOS - ELIMINAR USUARIO
+@app.post("/api/users/delete")
+def delete_user(
+    email: str = Form(...),
+    active_email: str = Form(...)
+):
+    clean_email = email.strip().lower()
+    if clean_email == active_email.strip().lower():
+        raise HTTPException(status_code=400, detail="No puedes eliminar tu propio usuario activo.")
+    
+    db = SessionLocal()
+    user = db.query(UserModel).filter(UserModel.email == clean_email).first()
+    if not user:
+        db.close()
+        raise HTTPException(status_code=404, detail="Usuario no encontrado.")
+    
+    db.delete(user)
     db.commit()
     db.close()
     return {"success": True}
@@ -337,7 +375,7 @@ def login_view():
     </html>
     """
 
-# EXPORTAR EXCEL ESTADOS DE CASOS DESDE BASE DE DATOS
+# EXPORTAR EXCEL ESTADOS
 @app.get("/api/export-excel-estados")
 def export_excel_estados():
     db = SessionLocal()
@@ -611,13 +649,23 @@ def serve_ui(session: Optional[str] = None):
             """
         return cards
 
+    # FILAS TABLA USUARIOS CON BOTONES DE ACCIÓN (EDITAR Y ELIMINAR)
     users_rows = ""
     for u in users:
+        is_self = (u.email == current_u_email)
+        btn_delete = "" if is_self else f'<button onclick="deleteUser(\'{u.email}\')" class="px-2.5 py-1 rounded bg-rose-50 text-rose-700 border border-rose-200 font-bold hover:bg-rose-100 transition-all">🗑️ Eliminar</button>'
+        
         users_rows += f"""
-        <tr class="border-b">
+        <tr class="border-b hover:bg-slate-50/50">
             <td class="py-3 px-4 font-bold text-slate-800">{u.name}</td>
             <td class="py-3 px-4 font-mono text-slate-600">{u.email}</td>
-            <td class="py-3 px-4"><span class="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">{u.role}</span></td>
+            <td class="py-3 px-4">
+                <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">{u.role}</span>
+            </td>
+            <td class="py-3 px-4 flex items-center gap-2">
+                <button onclick="editUserRole('{u.email}', '{u.role}', '{u.name}')" class="px-2.5 py-1 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 font-bold hover:bg-indigo-100 transition-all">✏️ Editar Permisos</button>
+                {btn_delete}
+            </td>
         </tr>
         """
 
@@ -753,7 +801,7 @@ def serve_ui(session: Optional[str] = None):
                     </div>
                     <table class="w-full text-left text-xs text-slate-700">
                         <thead class="bg-slate-50 text-[11px] uppercase font-bold border-b">
-                            <tr><th class="py-3 px-4">Usuario</th><th class="py-3 px-4">Correo Electrónico</th><th class="py-3 px-4">Perfil / Permisos</th></tr>
+                            <tr><th class="py-3 px-4">Usuario</th><th class="py-3 px-4">Correo Electrónico</th><th class="py-3 px-4">Perfil / Permisos</th><th class="py-3 px-4">Acciones</th></tr>
                         </thead>
                         <tbody>
                             {users_rows}
@@ -780,6 +828,35 @@ def serve_ui(session: Optional[str] = None):
             </div>
             ''' if is_admin else ''}
         </main>
+
+        <!-- MODAL EDITAR PERMISOS/ROL DE USUARIO -->
+        <div id="modal-edit-user" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs hidden">
+            <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-md p-6 space-y-4">
+                <div class="flex justify-between items-center border-b pb-2">
+                    <h3 class="text-sm font-bold text-slate-900">✏️ Modificar Permisos de Usuario</h3>
+                    <button onclick="document.getElementById('modal-edit-user').classList.add('hidden')" class="font-bold text-slate-500 hover:text-slate-800">&times;</button>
+                </div>
+                <form id="form-edit-user" class="space-y-3 text-xs">
+                    <input type="hidden" id="edit-user-email" name="email">
+                    <div>
+                        <label class="block font-bold text-slate-700 mb-1">Usuario</label>
+                        <input type="text" id="edit-user-name" disabled class="w-full px-3 py-2 rounded-lg border bg-slate-100 text-slate-600 font-semibold">
+                    </div>
+                    <div>
+                        <label class="block font-bold text-slate-700 mb-1">Nuevo Perfil / Rol de Acceso *</label>
+                        <select id="edit-user-role" name="role" class="w-full px-3 py-2 rounded-lg border border-slate-300 font-bold text-indigo-700">
+                            <option value="MEDICO_CALIFICADOR">🩺 Médico Calificador PCL</option>
+                            <option value="MEDICO_COMITE">👥 Médico Comité</option>
+                            <option value="ADMINISTRADOR">🔑 Administrador (Acceso Total)</option>
+                        </select>
+                    </div>
+                    <div class="flex justify-end gap-2 pt-3 border-t">
+                        <button type="button" onclick="document.getElementById('modal-edit-user').classList.add('hidden')" class="px-3 py-1.5 border rounded-lg font-semibold">Cancelar</button>
+                        <button type="submit" class="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg shadow-xs">Actualizar Permisos</button>
+                    </div>
+                </form>
+            </div>
+        </div>
 
         <!-- MODAL FORMULARIO INGRESO -->
         <div id="modal-nuevo" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs hidden">
@@ -1006,6 +1083,43 @@ def serve_ui(session: Optional[str] = None):
                     activeModalBtn.classList.add('border-b-2', 'border-indigo-600', 'text-indigo-700');
                 }}
             }}
+
+            function editUserRole(email, currentRole, name) {{
+                document.getElementById('edit-user-email').value = email;
+                document.getElementById('edit-user-name').value = name + ' (' + email + ')';
+                document.getElementById('edit-user-role').value = currentRole;
+                document.getElementById('modal-edit-user').classList.remove('hidden');
+            }}
+
+            async function deleteUser(email) {{
+                if (!confirm("¿Está seguro de que desea eliminar al usuario (" + email + ")? Esta acción no se puede deshacer.")) return;
+                
+                const formData = new FormData();
+                formData.append('email', email);
+                formData.append('active_email', '{current_u_email}');
+
+                const res = await fetch('/api/users/delete', {{ method: 'POST', body: formData }});
+                if (res.ok) {{
+                    alert('Usuario eliminado correctamente.');
+                    window.location.reload();
+                }} else {{
+                    const data = await res.json();
+                    alert(data.detail || "Error al eliminar el usuario.");
+                }}
+            }}
+
+            document.getElementById('form-edit-user').addEventListener('submit', async (e) => {{
+                e.preventDefault();
+                const formData = new FormData(e.target);
+                const res = await fetch('/api/users/update', {{ method: 'POST', body: formData }});
+                if (res.ok) {{
+                    alert('Permisos actualizados correctamente.');
+                    window.location.reload();
+                }} else {{
+                    const data = await res.json();
+                    alert(data.detail || "Error al actualizar los permisos.");
+                }}
+            }});
 
             async function openManageModal(caseId) {{
                 const res = await fetch('/api/cases/' + caseId);
