@@ -97,7 +97,7 @@ class AuditModel(Base):
 
 Base.metadata.create_all(bind=engine)
 
-# SEMBRAR USUARIOS POR DEFECTO CON LA LISTA SOLICITADA
+# SEMBRAR USUARIOS POR DEFECTO
 db_init = SessionLocal()
 if db_init.query(UserModel).count() == 0:
     db_init.add(UserModel(name="Estiven Ayala", email="estiven.ayala@codess.org.co", password="123456", role="ADMINISTRADOR"))
@@ -108,6 +108,7 @@ if db_init.query(UserModel).count() == 0:
     db_init.add(UserModel(name="Laura Vanessa Deyanira Rua Pertuz", email="laura.rua@pcl.com", password="123456", role="MEDICO_CALIFICADOR"))
     
     # Médicos Comité
+    db_init.add(UserModel(name="Dr. Carlos Fernando Mora", email="carlos.mora@pcl.com", password="123456", role="MEDICO_COMITE"))
     db_init.add(UserModel(name="Yinibeth Paola Leyton Castro", email="yinibeth.leyton@pcl.com", password="123456", role="MEDICO_COMITE"))
     db_init.commit()
 
@@ -117,7 +118,7 @@ db_init.close()
 # APLICACIÓN FASTAPI Y LÓGICA DE NEGOCIO
 # =============================================================
 
-app = FastAPI(title="Sistema de Gestión PCL - Formulario Simplificado")
+app = FastAPI(title="Sistema de Gestión PCL - Formulario Pericial Integrado")
 
 ACTIVE_SESSIONS: Dict[str, str] = {}
 
@@ -428,7 +429,14 @@ def get_case_detail(case_id: str):
 def transition_case(
     case_id: str = Form(...), action_name: str = Form(...), comments: str = Form(...),
     new_assignee: Optional[str] = Form(None), pcl_percentage: Optional[float] = Form(None),
-    requested_docs: Optional[str] = Form(None), active_email: Optional[str] = Form("estiven.ayala@codess.org.co")
+    requested_docs: Optional[str] = Form(None),
+    claim_number: Optional[str] = Form(None),
+    origin_type: Optional[str] = Form(None),
+    event_type: Optional[str] = Form(None),
+    it_days: Optional[int] = Form(None),
+    company_name: Optional[str] = Form(None),
+    company_id: Optional[str] = Form(None),
+    active_email: Optional[str] = Form("estiven.ayala@codess.org.co")
 ):
     db = SessionLocal()
     case = db.query(CaseModel).filter(CaseModel.id == int(case_id)).first()
@@ -457,6 +465,14 @@ def transition_case(
     case.module_state = rule["destination_state"].value if isinstance(rule["destination_state"], ModuleState) else str(rule["destination_state"])
     case.sub_step = rule["destination_sub_step"].value if isinstance(rule["destination_sub_step"], SubStep) else str(rule["destination_sub_step"])
     case.updated_at = now_str
+
+    # ACTUALIZAR CAMPOS PERICIALES EN CASO DE DILIGENCIARSE EN LA GESTIÓN
+    if claim_number and claim_number.strip(): case.claim_number = claim_number.strip()
+    if origin_type and origin_type.strip(): case.origin_type = origin_type.strip()
+    if event_type and event_type.strip(): case.event_type = event_type.strip()
+    if it_days is not None: case.it_days = it_days
+    if company_name and company_name.strip(): case.company_name = company_name.strip().upper()
+    if company_id and company_id.strip(): case.company_id = company_id.strip()
 
     assigned_info = None
     if rule.get("requires_assignee") and new_assignee and new_assignee.strip():
@@ -594,9 +610,9 @@ def serve_ui(session: Optional[str] = None):
     audits = db.query(AuditModel).order_by(AuditModel.id.desc()).all()
     users = db.query(UserModel).all()
 
-    # MEDICOS DINAMICOS DESDE LA BASE DE DATOS
-    medicos_pcl_db = [u.name for u in users if u.role in ["MEDICO_CALIFICADOR", "ADMINISTRADOR"]]
-    medicos_comite_db = [u.name for u in users if u.role in ["MEDICO_COMITE", "ADMINISTRADOR"]]
+    # MEDICOS EXCLUSIVOS POR ROL (EXCLUYE ADMINISTRADORES)
+    medicos_pcl_db = [u.name for u in users if u.role == "MEDICO_CALIFICADOR"]
+    medicos_comite_db = [u.name for u in users if u.role == "MEDICO_COMITE"]
 
     options_pcl_doc = "".join([f'<option value="{name}">{name}</option>' for name in medicos_pcl_db])
     options_comite_doc = "".join([f'<option value="{name}">{name}</option>' for name in medicos_comite_db])
@@ -911,7 +927,7 @@ def serve_ui(session: Optional[str] = None):
             </div>
         </div>
 
-        <!-- MODAL DINÁMICO DE GESTIÓN -->
+        <!-- MODAL DINÁMICO DE GESTIÓN CON FORMULARIO PERICIAL EXTENDIDO -->
         <div id="modal-gestionar" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs hidden">
             <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-4xl overflow-hidden">
                 <div class="px-6 py-4 bg-slate-900 text-white flex items-center justify-between">
@@ -942,15 +958,48 @@ def serve_ui(session: Optional[str] = None):
 
                             <div class="font-bold text-xs text-indigo-900" id="trans-title">Confirmar Transición</div>
                             
+                            <!-- CAMPOS PERICIALES COMPLEMENTARIOS QUE SE COMPLETAN AL GESTIONAR -->
+                            <div id="field-pericial-extra" class="space-y-3 p-3 bg-white rounded-lg border border-slate-200 text-xs">
+                                <div class="font-bold text-slate-800 border-b pb-1">📋 Información Técnica de Peritación (Diligenciada por el Calificador PCL)</div>
+                                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                    <div>
+                                        <label class="block font-bold text-slate-700 mb-1"># Siniestro *</label>
+                                        <input type="text" id="m-inp-claim" name="claim_number" required placeholder="Ej: 8920194" onkeypress="return event.charCode >= 48 && event.charCode <= 57" class="w-full px-3 py-1.5 rounded border border-slate-300 font-mono">
+                                    </div>
+                                    <div>
+                                        <label class="block font-bold text-slate-700 mb-1">Tipo de Origen *</label>
+                                        <select id="m-inp-origin" name="origin_type" class="w-full px-3 py-1.5 rounded border border-slate-300">
+                                            <option value="Laboral">Laboral</option>
+                                            <option value="Común">Común</option>
+                                            <option value="Mixto">Mixto</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label class="block font-bold text-slate-700 mb-1">Tipo de Evento *</label>
+                                        <select id="m-inp-event" name="event_type" class="w-full px-3 py-1.5 rounded border border-slate-300">
+                                            <option value="AT">AT</option>
+                                            <option value="EL">EL</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label class="block font-bold text-slate-700 mb-1">Días IT *</label>
+                                        <input type="number" id="m-inp-it" name="it_days" required min="0" value="180" class="w-full px-3 py-1.5 rounded border border-slate-300">
+                                    </div>
+                                    <div>
+                                        <label class="block font-bold text-slate-700 mb-1">Empresa / Empleador *</label>
+                                        <input type="text" id="m-inp-company" name="company_name" required placeholder="EJ: EMPRESA S.A.S." oninput="this.value = this.value.toUpperCase()" class="w-full px-3 py-1.5 rounded border border-slate-300 uppercase">
+                                    </div>
+                                    <div>
+                                        <label class="block font-bold text-slate-700 mb-1">NIT / ID Empresa</label>
+                                        <input type="text" id="m-inp-company-id" name="company_id" placeholder="Ej: 900.284.195-2" class="w-full px-3 py-1.5 rounded border border-slate-300 font-mono">
+                                    </div>
+                                </div>
+                            </div>
+
                             <div id="field-assignee" class="hidden">
                                 <label class="block text-xs font-bold text-slate-800 mb-1" id="lbl-assignee">Seleccionar Integrante Responsable *</label>
                                 <select id="sel-assignee" name="new_assignee" class="w-full px-3 py-2 text-xs rounded-lg border bg-white font-semibold text-slate-800">
-                                    <optgroup label="Integrantes del Comité Médico">
-                                        {options_comite_doc}
-                                    </optgroup>
-                                    <optgroup label="Médicos Calificadores PCL">
-                                        {options_pcl_doc}
-                                    </optgroup>
+                                    <!-- SE POBLA DINAMICAMENTE SEGUN LA ACCION -->
                                 </select>
                             </div>
 
@@ -1004,6 +1053,9 @@ def serve_ui(session: Optional[str] = None):
         </div>
 
         <script>
+            const OPTIONS_COMITE = `{options_comite_doc}`;
+            const OPTIONS_PCL = `{options_pcl_doc}`;
+
             function switchTab(tabId) {{
                 document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
                 document.querySelectorAll('.tab-btn').forEach(btn => {{
@@ -1074,12 +1126,15 @@ def serve_ui(session: Optional[str] = None):
                 }}
             }});
 
+            let currentCaseData = null;
+
             async function openManageModal(caseId) {{
                 const res = await fetch('/api/cases/' + caseId);
                 if (!res.ok) return;
 
                 const data = await res.json();
                 const c = data.case;
+                currentCaseData = c;
                 const rules = data.rules;
                 const audits = data.audits;
 
@@ -1150,17 +1205,30 @@ def serve_ui(session: Optional[str] = None):
                 document.getElementById('trans-action-name').value = actionName;
                 document.getElementById('trans-title').innerText = "Acción Seleccionada: " + actionName;
 
+                // PRE-Cargar valores existentes en el formulario pericial
+                if (currentCaseData) {{
+                    if (currentCaseData.claim_number && currentCaseData.claim_number !== "PENDIENTE") document.getElementById('m-inp-claim').value = currentCaseData.claim_number;
+                    if (currentCaseData.origin_type) document.getElementById('m-inp-origin').value = currentCaseData.origin_type;
+                    if (currentCaseData.event_type) document.getElementById('m-inp-event').value = currentCaseData.event_type;
+                    if (currentCaseData.it_days !== null && currentCaseData.it_days !== undefined) document.getElementById('m-inp-it').value = currentCaseData.it_days;
+                    if (currentCaseData.company_name && currentCaseData.company_name !== "NO ESPECIFICADO") document.getElementById('m-inp-company').value = currentCaseData.company_name;
+                    if (currentCaseData.company_id) document.getElementById('m-inp-company-id').value = currentCaseData.company_id;
+                }}
+
                 const fAssignee = document.getElementById('field-assignee');
                 const fPercentage = document.getElementById('field-percentage');
                 const fDocs = document.getElementById('field-docs');
                 const lblAssignee = document.getElementById('lbl-assignee');
+                const selAssignee = document.getElementById('sel-assignee');
 
                 if (reqAssignee) {{
                     fAssignee.classList.remove('hidden');
                     if (actionName.includes("Dictaminar")) {{
                         lblAssignee.innerText = "Seleccionar Integrante de Comité Responsable *";
+                        selAssignee.innerHTML = OPTIONS_COMITE;
                     }} else {{
                         lblAssignee.innerText = "Seleccionar Médico Calificador Responsable *";
+                        selAssignee.innerHTML = OPTIONS_PCL;
                     }}
                 }} else {{
                     fAssignee.classList.add('hidden');
