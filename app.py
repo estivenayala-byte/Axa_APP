@@ -1,18 +1,156 @@
-from fastapi import FastAPI, Request, Form, HTTPException
-from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
-import uvicorn
+import os
 import io
 import pandas as pd
 from datetime import datetime
 from typing import Optional, List, Dict
+from fastapi import FastAPI, Request, Form, HTTPException
+from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
+import uvicorn
 from pydantic import BaseModel
 from enum import Enum
 
-app = FastAPI(title="Sistema de Gestión PCL - Administración de Usuarios")
+from sqlalchemy import create_engine, Column, Integer, String, Float, Text
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, Session
 
 # =============================================================
-# MODELOS DE DATOS Y ENUMS
+# PERSISTENCIA EN BASE DE DATOS (SUPABASE / POSTGRESQL / SQLITE)
 # =============================================================
+
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if not DATABASE_URL:
+    # Si no hay variable de entorno, usa SQLite local en un archivo persistente
+    DATABASE_URL = "sqlite:///./pcl_database.db"
+
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+engine = create_engine(
+    DATABASE_URL, 
+    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
+)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+class CaseModel(Base):
+    __tablename__ = "casos_pcl"
+
+    id = Column(Integer, primary_key=True, index=True)
+    document_type = Column(String(50), nullable=False)
+    patient_id = Column(String(20), nullable=False)
+    patient_name = Column(String(150), nullable=False)
+    claim_number = Column(String(30), nullable=False)
+    origin_type = Column(String(20), nullable=False)
+    event_type = Column(String(10), nullable=False)
+    qualification_type = Column(String(20), nullable=False)
+    it_days = Column(Integer, nullable=False)
+    company_name = Column(String(150), nullable=False)
+    company_id = Column(String(30), nullable=True)
+    axa_filing_date = Column(String(20), nullable=False)
+    insurer = Column(String(100), default="AXA Colpatria Seguros")
+    module_state = Column(String(50), nullable=False)
+    sub_step = Column(String(50), nullable=False)
+    assigned_to = Column(String(100), nullable=False)
+    assigned_role = Column(String(50), nullable=False)
+    created_by = Column(String(100), nullable=False)
+    created_at = Column(String(30), nullable=False)
+    updated_at = Column(String(30), nullable=False)
+    priority = Column(String(10), default="MEDIA")
+    pcl_percentage = Column(Float, nullable=True)
+    requested_documents = Column(Text, nullable=True)
+    notes = Column(Text, nullable=True)
+
+    # TRAZABILIDAD
+    fecha_asignacion_pcl = Column(String(30), nullable=True)
+    fecha_calificacion = Column(String(30), nullable=True)
+    accion_pcl = Column(String(100), nullable=True)
+    fecha_solicitud_documentos = Column(String(30), nullable=True)
+    fecha_asignacion_comite = Column(String(30), nullable=True)
+    fecha_visado = Column(String(30), nullable=True)
+    accion_comite = Column(String(100), nullable=True)
+    fecha_notificacion_axa = Column(String(30), nullable=True)
+
+class UserModel(Base):
+    __tablename__ = "usuarios_pcl"
+
+    email = Column(String(100), primary_key=True, index=True)
+    name = Column(String(100), nullable=False)
+    password = Column(String(100), nullable=False)
+    role = Column(String(50), nullable=False)
+
+class AuditModel(Base):
+    __tablename__ = "auditoria_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    case_id = Column(Integer, nullable=False)
+    user_name = Column(String(100), nullable=False)
+    user_email = Column(String(100), nullable=False)
+    user_role = Column(String(50), nullable=False)
+    action = Column(String(100), nullable=False)
+    origin_state = Column(String(50), nullable=False)
+    destination_state = Column(String(50), nullable=False)
+    origin_sub_step = Column(String(50), nullable=False)
+    destination_sub_step = Column(String(50), nullable=False)
+    timestamp = Column(String(30), nullable=False)
+    comments = Column(Text, nullable=False)
+    assigned_to_info = Column(String(100), nullable=True)
+
+# CREAR LAS TABLAS EN LA BASE DE DATOS AUTOMÁTICAMENTE
+Base.metadata.create_all(bind=engine)
+
+# SEMBRAR USUARIOS POR DEFECTO SI LA TABLA ESTÁ VACÍA
+db_init = SessionLocal()
+if db_init.query(UserModel).count() == 0:
+    db_init.add(UserModel(name="Estiven Ayala", email="estiven.ayala@codess.org.co", password="123456", role="ADMINISTRADOR"))
+    db_init.add(UserModel(name="Dra. Marcela Restrepo", email="medico.calificador@pcl.com", password="123456", role="MEDICO_CALIFICADOR"))
+    db_init.add(UserModel(name="Dr. Carlos Fernando Mora", email="medico.comite@pcl.com", password="123456", role="MEDICO_COMITE"))
+    db_init.commit()
+
+# SEMBRAR CASOS INICIALES SI LA TABLA ESTÁ VACÍA
+if db_init.query(CaseModel).count() == 0:
+    c1 = CaseModel(
+        document_type="Cédula de Ciudadanía", patient_id="1020485921",
+        patient_name="ANDRÉS FELIPE MORALES CASTRO", claim_number="8920194", origin_type="Laboral",
+        event_type="AT", qualification_type="ATEL", it_days=180, company_name="MANUFACTURAS ANDINAS S.A.S.",
+        company_id="900.284.195-2", axa_filing_date="2026-09-09", insurer="AXA Colpatria Seguros",
+        module_state="REGISTRO", sub_step="REGISTRADO",
+        assigned_to="Lic. Paula Andrea Gómez", assigned_role="ADMINISTRADOR",
+        created_by="estiven.ayala@codess.org.co", created_at="2026-09-10 08:30:00", updated_at="2026-09-10 08:30:00",
+        notes="Expediente radicado con folios iniciales."
+    )
+    c2 = CaseModel(
+        document_type="Cédula de Ciudadanía", patient_id="52893412",
+        patient_name="GLORIA ESPERANZA RINCÓN ORTIZ", claim_number="7829103", origin_type="Laboral",
+        event_type="AT", qualification_type="COMBO", it_days=240, company_name="TRANSPORTES Y LOGÍSTICA EXPRESS",
+        company_id="860.012.784-1", axa_filing_date="2026-09-07", insurer="Seguros Bolívar ARL",
+        module_state="CALIFICACION_PCL", sub_step="ASIGNADO",
+        assigned_to="Dra. Marcela Restrepo", assigned_role="MEDICO_CALIFICADOR",
+        created_by="paula.gomez@pcl-registro.co", created_at="2026-09-08 10:15:00", updated_at="2026-09-09 14:20:00",
+        fecha_asignacion_pcl="2026-09-09 14:20:00"
+    )
+    db_init.add(c1)
+    db_init.add(c2)
+    db_init.commit()
+
+    a1 = AuditModel(
+        case_id=1, user_name="Estiven Ayala", user_email="estiven.ayala@codess.org.co", user_role="ADMINISTRADOR",
+        action="REGISTRAR_CASO", origin_state="REGISTRO", destination_state="REGISTRO",
+        origin_sub_step="REGISTRADO", destination_sub_step="REGISTRADO",
+        timestamp="2026-09-10 08:30:00", comments="Radicación inicial del caso en la plataforma.",
+        assigned_to_info="Lic. Paula Andrea Gómez"
+    )
+    db_init.add(a1)
+    db_init.commit()
+
+db_init.close()
+
+# =============================================================
+# APLICACIÓN FASTAPI Y LÓGICA DE NEGOCIO
+# =============================================================
+
+app = FastAPI(title="Sistema de Gestión PCL - Base de Datos Persistente")
+
+ACTIVE_SESSIONS: Dict[str, str] = {}
 
 class ModuleState(str, Enum):
     REGISTRO = "REGISTRO"
@@ -43,82 +181,6 @@ class UserRole(str, Enum):
     ADMINISTRADOR = "ADMINISTRADOR"
     MEDICO_CALIFICADOR = "MEDICO_CALIFICADOR"
     MEDICO_COMITE = "MEDICO_COMITE"
-
-# DIRECTORIO Y BASE DE DATOS DE USUARIOS
-USERS_DB: Dict[str, dict] = {
-    "estiven.ayala@codess.org.co": {
-        "name": "Estiven Ayala",
-        "role": UserRole.ADMINISTRADOR,
-        "email": "estiven.ayala@codess.org.co",
-        "password": "123456"
-    },
-    "medico.calificador@pcl.com": {
-        "name": "Dra. Marcela Restrepo",
-        "role": UserRole.MEDICO_CALIFICADOR,
-        "email": "medico.calificador@pcl.com",
-        "password": "123456"
-    },
-    "medico.comite@pcl.com": {
-        "name": "Dr. Carlos Fernando Mora",
-        "role": UserRole.MEDICO_COMITE,
-        "email": "medico.comite@pcl.com",
-        "password": "123456"
-    }
-}
-
-ACTIVE_SESSIONS: Dict[str, str] = {}
-
-class PCLCase(BaseModel):
-    id: str
-    document_type: str
-    patient_id: str
-    patient_name: str
-    claim_number: str
-    origin_type: str
-    event_type: str
-    qualification_type: str
-    it_days: int
-    company_name: str
-    company_id: Optional[str] = None
-    axa_filing_date: str
-    insurer: Optional[str] = "AXA Colpatria Seguros"
-    module_state: ModuleState
-    sub_step: SubStep
-    assigned_to: str
-    assigned_role: UserRole
-    created_by: str
-    created_at: str
-    updated_at: str
-    priority: str = "MEDIA"
-    pcl_percentage: Optional[float] = None
-    deficit_details: Optional[str] = None
-    requested_documents: Optional[str] = None
-    closing_reason: Optional[str] = None
-    notes: Optional[str] = None
-
-    fecha_asignacion_pcl: Optional[str] = None
-    fecha_calificacion: Optional[str] = None
-    accion_pcl: Optional[str] = None
-    fecha_solicitud_documentos: Optional[str] = None
-    fecha_asignacion_comite: Optional[str] = None
-    fecha_visado: Optional[str] = None
-    accion_comite: Optional[str] = None
-    fecha_notificacion_axa: Optional[str] = None
-
-class AuditEntry(BaseModel):
-    id: str
-    case_id: str
-    user_name: str
-    user_email: str
-    user_role: str
-    action: str
-    origin_state: str
-    destination_state: str
-    origin_sub_step: str
-    destination_sub_step: str
-    timestamp: str
-    comments: str
-    assigned_to_info: Optional[str] = None
 
 STATE_TRANSITIONS_MATRIX = [
     {
@@ -200,70 +262,41 @@ STATE_TRANSITIONS_MATRIX = [
     }
 ]
 
-CASES_DB: List[PCLCase] = [
-    PCLCase(
-        id="1", document_type="Cédula de Ciudadanía", patient_id="1020485921",
-        patient_name="ANDRÉS FELIPE MORALES CASTRO", claim_number="8920194", origin_type="Laboral",
-        event_type="AT", qualification_type="ATEL", it_days=180, company_name="MANUFACTURAS ANDINAS S.A.S.",
-        company_id="900.284.195-2", axa_filing_date="2026-09-09", insurer="AXA Colpatria Seguros",
-        module_state=ModuleState.REGISTRO, sub_step=SubStep.REGISTRADO,
-        assigned_to="Lic. Paula Andrea Gómez", assigned_role=UserRole.ADMINISTRADOR,
-        created_by="estiven.ayala@codess.org.co", created_at="2026-09-10 08:30:00", updated_at="2026-09-10 08:30:00",
-        pcl_percentage=None, notes="Expediente radicado con folios iniciales."
-    ),
-    PCLCase(
-        id="2", document_type="Cédula de Ciudadanía", patient_id="52893412",
-        patient_name="GLORIA ESPERANZA RINCÓN ORTIZ", claim_number="7829103", origin_type="Laboral",
-        event_type="AT", qualification_type="COMBO", it_days=240, company_name="TRANSPORTES Y LOGÍSTICA EXPRESS",
-        company_id="860.012.784-1", axa_filing_date="2026-09-07", insurer="Seguros Bolívar ARL",
-        module_state=ModuleState.CALIFICACION_PCL, sub_step=SubStep.ASIGNADO,
-        assigned_to="Dra. Marcela Restrepo", assigned_role=UserRole.MEDICO_CALIFICADOR,
-        created_by="paula.gomez@pcl-registro.co", created_at="2026-09-08 10:15:00", updated_at="2026-09-09 14:20:00",
-        fecha_asignacion_pcl="2026-09-09 14:20:00", pcl_percentage=None
-    )
-]
-
-AUDIT_DB: List[AuditEntry] = [
-    AuditEntry(
-        id="1", case_id="1", user_name="Estiven Ayala",
-        user_email="estiven.ayala@codess.org.co", user_role="ADMINISTRADOR",
-        action="REGISTRAR_CASO", origin_state="REGISTRO", destination_state="REGISTRO",
-        origin_sub_step="REGISTRADO", destination_sub_step="REGISTRADO",
-        timestamp="2026-09-10 08:30:00", comments="Radicación inicial del caso en la plataforma.",
-        assigned_to_info="Lic. Paula Andrea Gómez"
-    )
-]
-
-# CREAR UN NUEVO USUARIO DESDE LA INTERFAZ
+# API USUARIOS
 @app.post("/api/users/create")
 def create_user(
     name: str = Form(...),
     email: str = Form(...),
     password: str = Form(...),
-    role: UserRole = Form(...)
+    role: str = Form(...)
 ):
+    db = SessionLocal()
     clean_email = email.strip().lower()
-    if clean_email in USERS_DB:
+    existing = db.query(UserModel).filter(UserModel.email == clean_email).first()
+    if existing:
+        db.close()
         raise HTTPException(status_code=400, detail="El correo electrónico ya se encuentra registrado.")
     
-    USERS_DB[clean_email] = {
-        "name": name.strip(),
-        "role": role,
-        "email": clean_email,
-        "password": password.strip()
-    }
+    new_user = UserModel(name=name.strip(), email=clean_email, password=password.strip(), role=role)
+    db.add(new_user)
+    db.commit()
+    db.close()
     return {"success": True}
 
 # LOGIN
 @app.post("/login")
 def login(email: str = Form(...), password: str = Form(...)):
+    db = SessionLocal()
     clean_email = email.strip().lower()
-    user = USERS_DB.get(clean_email)
-    if not user or user["password"] != password.strip():
+    user = db.query(UserModel).filter(UserModel.email == clean_email).first()
+    
+    if not user or user.password != password.strip():
+        db.close()
         return HTMLResponse(
             """<script>alert('Correo o contraseña incorrectos.'); window.location.href='/login-view';</script>"""
         )
     
+    db.close()
     session_id = f"session_{clean_email}"
     ACTIVE_SESSIONS[session_id] = clean_email
     return RedirectResponse(url=f"/?session={session_id}", status_code=303)
@@ -304,15 +337,18 @@ def login_view():
     </html>
     """
 
+# EXPORTAR EXCEL ESTADOS DE CASOS DESDE BASE DE DATOS
 @app.get("/api/export-excel-estados")
 def export_excel_estados():
+    db = SessionLocal()
+    cases = db.query(CaseModel).all()
     output = io.BytesIO()
     cases_data = [{
-        "ID Caso": c.id, "Paciente": c.patient_name, "Tipo Doc": c.document_type,
+        "ID Caso": str(c.id), "Paciente": c.patient_name, "Tipo Doc": c.document_type,
         "N° Doc": c.patient_id, "# Siniestro": c.claim_number, "Origen": c.origin_type,
         "Evento": c.event_type, "Tipo Calificación": c.qualification_type, "Días IT": c.it_days,
-        "Empresa": c.company_name, "NIT": c.company_id or "N/A", "Módulo Actual": c.module_state.value,
-        "Sub-Paso": c.sub_step.value, "Responsable Asignado": c.assigned_to,
+        "Empresa": c.company_name, "NIT": c.company_id or "N/A", "Módulo Actual": c.module_state,
+        "Sub-Paso": c.sub_step, "Responsable Asignado": c.assigned_to,
         "% PCL Dictamen": f"{c.pcl_percentage}%" if c.pcl_percentage is not None else "--",
         "Fecha Radicación AXA": c.axa_filing_date, "Fecha creacion App": c.created_at,
         "Fecha Asigancion PCL": c.fecha_asignacion_pcl or "N/A", "Fecha Calificacion": c.fecha_calificacion or "N/A",
@@ -320,7 +356,8 @@ def export_excel_estados():
         "Documentos solicitados": c.requested_documents or "N/A", "Fecha Asignacion Comité": c.fecha_asignacion_comite or "N/A",
         "Fecha Visado": c.fecha_visado or "N/A", "Accion Comité": c.accion_comite or "N/A",
         "Fecha Notificacion AXA": c.fecha_notificacion_axa or "N/A", "Ultima Modificacion": c.updated_at
-    } for c in CASES_DB]
+    } for c in cases]
+    db.close()
 
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         pd.DataFrame(cases_data).to_excel(writer, sheet_name='Estados_Casos_PCL', index=False)
@@ -332,17 +369,21 @@ def export_excel_estados():
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
 
+# EXPORTAR EXCEL AUDITORÍA
 @app.get("/api/export-excel-auditoria")
 def export_excel_auditoria():
+    db = SessionLocal()
+    audits = db.query(AuditModel).order_by(AuditModel.id.desc()).all()
     output = io.BytesIO()
     audit_data = [{
-        "ID Evento": a.id, "ID Caso": a.case_id, "Fecha Exacta": a.timestamp,
+        "ID Evento": str(a.id), "ID Caso": str(a.case_id), "Fecha Exacta": a.timestamp,
         "Usuario Responsable": a.user_name, "Email": a.user_email, "Rol": a.user_role,
         "Acción Realizada": a.action, "Asignado A": a.assigned_to_info or "N/A",
         "Módulo Origen": a.origin_state, "Sub-Paso Origen": a.origin_sub_step,
         "Módulo Destino": a.destination_state, "Sub-Paso Destino": a.destination_sub_step,
         "Observaciones / Motivo": a.comments
-    } for a in AUDIT_DB]
+    } for a in audits]
+    db.close()
 
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         pd.DataFrame(audit_data).to_excel(writer, sheet_name='Log_Auditoria_Movimientos', index=False)
@@ -356,13 +397,24 @@ def export_excel_auditoria():
 
 @app.get("/api/cases/{case_id}")
 def get_case_detail(case_id: str):
-    case = next((c for c in CASES_DB if c.id == case_id), None)
+    db = SessionLocal()
+    case = db.query(CaseModel).filter(CaseModel.id == int(case_id)).first()
     if not case:
+        db.close()
         raise HTTPException(status_code=404, detail="Caso no encontrado.")
     
     rules = [r for r in STATE_TRANSITIONS_MATRIX if r["current_state"] == case.module_state and r["current_sub_step"] == case.sub_step]
-    audits = [a for a in AUDIT_DB if a.case_id == case_id]
-    return {"case": case.dict(), "rules": rules, "audits": [a.dict() for a in audits]}
+    audits = db.query(AuditModel).filter(AuditModel.case_id == int(case_id)).order_by(AuditModel.id.desc()).all()
+    
+    case_dict = {c.name: getattr(case, c.name) for c in case.__table__.columns}
+    case_dict["id"] = str(case_dict["id"])
+    audit_list = [{c.name: getattr(a, c.name) for c in a.__table__.columns} for a in audits]
+    for a in audit_list:
+        a["id"] = str(a["id"])
+        a["case_id"] = str(a["case_id"])
+
+    db.close()
+    return {"case": case_dict, "rules": rules, "audits": audit_list}
 
 @app.post("/api/cases/transition")
 def transition_case(
@@ -370,38 +422,45 @@ def transition_case(
     new_assignee: Optional[str] = Form(None), pcl_percentage: Optional[float] = Form(None),
     requested_docs: Optional[str] = Form(None), active_email: Optional[str] = Form("estiven.ayala@codess.org.co")
 ):
-    case = next((c for c in CASES_DB if c.id == case_id), None)
+    db = SessionLocal()
+    case = db.query(CaseModel).filter(CaseModel.id == int(case_id)).first()
     if not case:
+        db.close()
         raise HTTPException(status_code=404, detail="Caso no encontrado.")
 
     rule = next((r for r in STATE_TRANSITIONS_MATRIX if r["action_name"] == action_name and r["current_state"] == case.module_state), None)
     if not rule:
+        db.close()
         raise HTTPException(status_code=400, detail="Transición no permitida según la matriz de estados.")
 
     if rule.get("requires_reason") and not comments.strip():
+        db.close()
         raise HTTPException(status_code=400, detail="Es obligatorio ingresar las observaciones de auditoría.")
 
-    u_data = USERS_DB.get(active_email, USERS_DB["estiven.ayala@codess.org.co"])
+    u_data = db.query(UserModel).filter(UserModel.email == active_email.strip().lower()).first()
+    u_name = u_data.name if u_data else "Estiven Ayala"
+    u_email = u_data.email if u_data else "estiven.ayala@codess.org.co"
+    u_role = u_data.role if u_data else "ADMINISTRADOR"
 
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    origin_state = case.module_state.value
-    origin_sub_step = case.sub_step.value
+    origin_state = case.module_state
+    origin_sub_step = case.sub_step
 
-    case.module_state = rule["destination_state"]
-    case.sub_step = rule["destination_sub_step"]
+    case.module_state = rule["destination_state"].value if isinstance(rule["destination_state"], ModuleState) else str(rule["destination_state"])
+    case.sub_step = rule["destination_sub_step"].value if isinstance(rule["destination_sub_step"], SubStep) else str(rule["destination_sub_step"])
     case.updated_at = now_str
 
     assigned_info = None
     if rule.get("requires_assignee") and new_assignee and new_assignee.strip():
         case.assigned_to = new_assignee
         assigned_info = new_assignee
-    elif rule["destination_state"] == ModuleState.REGISTRO:
+    elif case.module_state == "REGISTRO":
         case.assigned_to = "Lic. Paula Andrea Gómez"
 
-    if rule["destination_state"] == ModuleState.CALIFICACION_PCL:
+    if case.module_state == "CALIFICACION_PCL":
         case.fecha_asignacion_pcl = now_str
 
-    if rule["destination_state"] == ModuleState.COMITE:
+    if case.module_state == "COMITE":
         case.fecha_asignacion_comite = now_str
 
     if action_name in ["Dictaminar y Calificar Caso", "Ajustar y Recalificar (Re-evaluación)", "Devolución Administrativa", "Devolución Administrativa tras Glosa"]:
@@ -422,16 +481,19 @@ def transition_case(
     elif action_name == "Registrar Notificación Exitosa":
         case.fecha_notificacion_axa = now_str
 
-    event_id = str(len(AUDIT_DB) + 1)
-    audit = AuditEntry(
-        id=event_id, case_id=case_id,
-        user_name=u_data["name"], user_email=u_data["email"], user_role=u_data["role"].value if isinstance(u_data["role"], UserRole) else str(u_data["role"]),
-        action=action_name, origin_state=origin_state, destination_state=case.module_state.value,
-        origin_sub_step=origin_sub_step, destination_sub_step=case.sub_step.value,
+    audit = AuditModel(
+        case_id=case.id, user_name=u_name, user_email=u_email, user_role=u_role,
+        action=action_name, origin_state=origin_state, destination_state=case.module_state,
+        origin_sub_step=origin_sub_step, destination_sub_step=case.sub_step,
         timestamp=now_str, comments=comments, assigned_to_info=assigned_info
     )
-    AUDIT_DB.insert(0, audit)
-    return {"success": True, "case": case.dict()}
+    db.add(audit)
+    db.commit()
+
+    case_dict = {c.name: getattr(case, c.name) for c in case.__table__.columns}
+    case_dict["id"] = str(case_dict["id"])
+    db.close()
+    return {"success": True, "case": case_dict}
 
 @app.post("/api/cases/create")
 def create_case(
@@ -449,35 +511,41 @@ def create_case(
     if not axa_filing_date.strip():
         raise HTTPException(status_code=400, detail="La Fecha de Radicación AXA es obligatoria.")
 
-    u_data = USERS_DB.get(active_email, USERS_DB["estiven.ayala@codess.org.co"])
+    db = SessionLocal()
+    u_data = db.query(UserModel).filter(UserModel.email == active_email.strip().lower()).first()
+    u_name = u_data.name if u_data else "Estiven Ayala"
+    u_email = u_data.email if u_data else "estiven.ayala@codess.org.co"
+    u_role = u_data.role if u_data else "ADMINISTRADOR"
 
-    case_id = str(len(CASES_DB) + 1)
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     doc_assigned = assigned_doctor or "Dra. Marcela Restrepo"
 
-    new_case = PCLCase(
-        id=case_id, document_type=document_type, patient_id=patient_id, patient_name=patient_name.upper(),
+    new_case = CaseModel(
+        document_type=document_type, patient_id=patient_id, patient_name=patient_name.upper(),
         claim_number=claim_number, origin_type=origin_type, event_type=event_type,
         qualification_type=qualification_type, it_days=it_days, company_name=company_name.upper(),
-        company_id=company_id, axa_filing_date=axa_filing_date, module_state=ModuleState.CALIFICACION_PCL,
-        sub_step=SubStep.ASIGNADO, assigned_to=doc_assigned, assigned_role=UserRole.MEDICO_CALIFICADOR,
-        created_by=u_data["email"], created_at=now_str, updated_at=now_str,
+        company_id=company_id, axa_filing_date=axa_filing_date, module_state="CALIFICACION_PCL",
+        sub_step="ASIGNADO", assigned_to=doc_assigned, assigned_role="MEDICO_CALIFICADOR",
+        created_by=u_email, created_at=now_str, updated_at=now_str,
         notes=notes, pcl_percentage=None, fecha_asignacion_pcl=now_str
     )
+    db.add(new_case)
+    db.commit()
+    db.refresh(new_case)
 
-    event_id = str(len(AUDIT_DB) + 1)
-    audit = AuditEntry(
-        id=event_id, case_id=case_id, user_name=u_data["name"],
-        user_email=u_data["email"], user_role=u_data["role"].value if isinstance(u_data["role"], UserRole) else str(u_data["role"]),
+    audit = AuditModel(
+        case_id=new_case.id, user_name=u_name, user_email=u_email, user_role=u_role,
         action="REGISTRAR_Y_ASIGNAR_CASO", origin_state="REGISTRO", destination_state="CALIFICACION_PCL",
         origin_sub_step="REGISTRADO", destination_sub_step="ASIGNADO", timestamp=now_str,
         comments=f"Creación formal e ingreso directo a Calificación PCL. Asignado a: {doc_assigned}.",
         assigned_to_info=doc_assigned
     )
+    db.add(audit)
+    db.commit()
 
-    CASES_DB.insert(0, new_case)
-    AUDIT_DB.insert(0, audit)
-    return {"success": True, "id": case_id}
+    created_id = str(new_case.id)
+    db.close()
+    return {"success": True, "id": created_id}
 
 # FRONTEND PRINCIPAL
 @app.get("/", response_class=HTMLResponse)
@@ -486,17 +554,31 @@ def serve_ui(session: Optional[str] = None):
         return RedirectResponse(url="/login-view")
 
     user_email = ACTIVE_SESSIONS[session]
-    current_u = USERS_DB.get(user_email, USERS_DB["estiven.ayala@codess.org.co"])
-    role = current_u["role"]
-    is_admin = (role == UserRole.ADMINISTRADOR or role == "ADMINISTRADOR")
-    is_calificador = (role == UserRole.MEDICO_CALIFICADOR or role == "MEDICO_CALIFICADOR")
-    is_comite = (role == UserRole.MEDICO_COMITE or role == "MEDICO_COMITE")
+    db = SessionLocal()
+    current_u = db.query(UserModel).filter(UserModel.email == user_email).first()
+    
+    if not current_u:
+        current_u_name = "Estiven Ayala"
+        current_u_email = "estiven.ayala@codess.org.co"
+        role_str = "ADMINISTRADOR"
+    else:
+        current_u_name = current_u.name
+        current_u_email = current_u.email
+        role_str = str(current_u.role)
 
-    en_tramite = len([c for c in CASES_DB if c.module_state not in [ModuleState.CIERRE_ADMINISTRATIVO, ModuleState.GESTIONADO]])
-    finalizados = len(CASES_DB) - en_tramite
+    is_admin = (role_str == "ADMINISTRADOR")
+    is_calificador = (role_str == "MEDICO_CALIFICADOR")
+    is_comite = (role_str == "MEDICO_COMITE")
 
-    def render_cases_cards(state_filter: Optional[List[ModuleState]] = None):
-        filtered = [c for c in CASES_DB if c.module_state in state_filter] if state_filter else CASES_DB
+    cases = db.query(CaseModel).order_by(CaseModel.id.desc()).all()
+    audits = db.query(AuditModel).order_by(AuditModel.id.desc()).all()
+    users = db.query(UserModel).all()
+
+    en_tramite = len([c for c in cases if c.module_state not in ["CIERRE_ADMINISTRATIVO", "GESTIONADO"]])
+    finalizados = len(cases) - en_tramite
+
+    def render_cases_cards(state_filter: Optional[List[str]] = None):
+        filtered = [c for c in cases if c.module_state in state_filter] if state_filter else cases
         if not filtered:
             return '<div class="col-span-3 text-center py-8 text-xs text-slate-500 bg-white rounded-xl border border-slate-200">No hay expedientes activos en esta bandeja.</div>'
         
@@ -509,7 +591,7 @@ def serve_ui(session: Optional[str] = None):
                 <div>
                     <div class="flex items-center justify-between gap-2 mb-2">
                         <span class="font-mono font-bold text-sm text-indigo-700">ID Caso: {c.id}</span>
-                        <span class="text-[10px] font-bold px-2 py-0.5 rounded border bg-sky-50 text-sky-700 border-sky-200">{c.module_state.value}</span>
+                        <span class="text-[10px] font-bold px-2 py-0.5 rounded border bg-sky-50 text-sky-700 border-sky-200">{c.module_state}</span>
                     </div>
                     <h4 class="text-sm font-bold text-slate-900 uppercase">{c.patient_name}</h4>
                     <div class="text-xs text-slate-500 font-mono mt-0.5">{c.document_type}: <strong>{c.patient_id}</strong> &bull; Sin. <strong class="text-indigo-700">#{c.claim_number}</strong></div>
@@ -529,17 +611,17 @@ def serve_ui(session: Optional[str] = None):
             """
         return cards
 
-    # FILAS PARA LA TABLA DE GESTIÓN DE USUARIOS
     users_rows = ""
-    for u_mail, u_info in USERS_DB.items():
-        r_val = u_info["role"].value if isinstance(u_info["role"], UserRole) else str(u_info["role"])
+    for u in users:
         users_rows += f"""
         <tr class="border-b">
-            <td class="py-3 px-4 font-bold text-slate-800">{u_info["name"]}</td>
-            <td class="py-3 px-4 font-mono text-slate-600">{u_mail}</td>
-            <td class="py-3 px-4"><span class="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">{r_val}</span></td>
+            <td class="py-3 px-4 font-bold text-slate-800">{u.name}</td>
+            <td class="py-3 px-4 font-mono text-slate-600">{u.email}</td>
+            <td class="py-3 px-4"><span class="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">{u.role}</span></td>
         </tr>
         """
+
+    db.close()
 
     return f"""
     <!DOCTYPE html>
@@ -560,9 +642,9 @@ def serve_ui(session: Optional[str] = None):
                         <div>
                             <div class="flex items-center gap-2">
                                 <h1 class="text-xl font-bold text-slate-900 tracking-tight">Sistema de Gestión PCL</h1>
-                                <span class="text-xs font-semibold px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200">{role.value if isinstance(role, UserRole) else str(role)}</span>
+                                <span class="text-xs font-semibold px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200">{role_str}</span>
                             </div>
-                            <p class="text-xs text-slate-500 font-medium">Usuario: <strong class="text-indigo-700">{current_u['name']}</strong> ({current_u['email']})</p>
+                            <p class="text-xs text-slate-500 font-medium">Usuario: <strong class="text-indigo-700">{current_u_name}</strong> ({current_u_email})</p>
                         </div>
                     </div>
                     <div class="flex flex-wrap items-center gap-2.5">
@@ -610,29 +692,29 @@ def serve_ui(session: Optional[str] = None):
                     </div>
                     <button onclick="document.getElementById('modal-nuevo').classList.remove('hidden')" class="px-4 py-2 rounded-xl bg-indigo-600 text-white text-xs font-semibold">Abrir Formulario de Ingreso</button>
                 </div>
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{render_cases_cards([ModuleState.REGISTRO])}</div>
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{render_cases_cards(["REGISTRO"])}</div>
             </div>
 
             <div id="mod-admin" class="tab-content hidden space-y-4">
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{render_cases_cards([ModuleState.REGISTRO, ModuleState.EN_SOLICITUD_DOCUMENTOS])}</div>
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{render_cases_cards(["REGISTRO", "EN_SOLICITUD_DOCUMENTOS"])}</div>
             </div>
             ''' if is_admin else ''}
 
             {f'''
             <div id="mod-calificacion" class="tab-content {"space-y-4" if is_calificador else "hidden space-y-4"}">
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{render_cases_cards([ModuleState.CALIFICACION_PCL])}</div>
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{render_cases_cards(["CALIFICACION_PCL"])}</div>
             </div>
             ''' if is_admin or is_calificador else ''}
 
             {f'''
             <div id="mod-comite" class="tab-content {"space-y-4" if is_comite else "hidden space-y-4"}">
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{render_cases_cards([ModuleState.COMITE])}</div>
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{render_cases_cards(["COMITE"])}</div>
             </div>
             ''' if is_admin or is_comite else ''}
 
             {f'''
             <div id="mod-cierre" class="tab-content hidden space-y-4">
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{render_cases_cards([ModuleState.PENDIENTE_CIERRE])}</div>
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{render_cases_cards(["PENDIENTE_CIERRE"])}</div>
             </div>
 
             <div id="mod-usuarios" class="tab-content hidden space-y-6">
@@ -681,7 +763,7 @@ def serve_ui(session: Optional[str] = None):
             </div>
 
             <div id="mod-finalizados" class="tab-content hidden space-y-4">
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{render_cases_cards([ModuleState.CIERRE_ADMINISTRATIVO, ModuleState.GESTIONADO])}</div>
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{render_cases_cards(["CIERRE_ADMINISTRATIVO", "GESTIONADO"])}</div>
             </div>
 
             <div id="mod-auditoria" class="tab-content hidden space-y-4">
@@ -691,7 +773,7 @@ def serve_ui(session: Optional[str] = None):
                             <tr><th class="py-3 px-4">ID Evento</th><th class="py-3 px-4">ID Caso</th><th class="py-3 px-4">Fecha</th><th class="py-3 px-4">Usuario</th><th class="py-3 px-4">Acción</th><th class="py-3 px-4">Transición</th><th class="py-3 px-4">Observaciones</th></tr>
                         </thead>
                         <tbody>
-                            {"".join([f'<tr class="border-b"><td class="py-3 px-4 font-mono font-bold text-slate-500">{a.id}</td><td class="py-3 px-4 font-mono font-bold text-indigo-700">{a.case_id}</td><td class="py-3 px-4">{a.timestamp}</td><td class="py-3 px-4">{a.user_name}</td><td class="py-3 px-4 font-semibold">{a.action}</td><td class="py-3 px-4"><span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100">{a.origin_state} &rarr; {a.destination_state}</span></td><td class="py-3 px-4 text-slate-600">{a.comments}</td></tr>' for a in AUDIT_DB])}
+                            {"".join([f'<tr class="border-b"><td class="py-3 px-4 font-mono font-bold text-slate-500">{a.id}</td><td class="py-3 px-4 font-mono font-bold text-indigo-700">{a.case_id}</td><td class="py-3 px-4">{a.timestamp}</td><td class="py-3 px-4">{a.user_name}</td><td class="py-3 px-4 font-semibold">{a.action}</td><td class="py-3 px-4"><span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100">{a.origin_state} &rarr; {a.destination_state}</span></td><td class="py-3 px-4 text-slate-600">{a.comments}</td></tr>' for a in audits])}
                         </tbody>
                     </table>
                 </div>
@@ -708,7 +790,7 @@ def serve_ui(session: Optional[str] = None):
                 </div>
                 
                 <form id="form-case" class="p-6 space-y-4 max-h-[80vh] overflow-y-auto">
-                    <input type="hidden" name="active_email" value="{user_email}">
+                    <input type="hidden" name="active_email" value="{current_u_email}">
                     <div class="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-3">
                         <h3 class="text-xs font-bold uppercase text-slate-800 border-b pb-1">1. Identificación del Paciente / Dictaminado</h3>
                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -822,7 +904,7 @@ def serve_ui(session: Optional[str] = None):
                         <form id="form-transition" class="hidden p-4 rounded-xl border border-indigo-200 bg-indigo-50/30 space-y-3">
                             <input type="hidden" id="trans-case-id" name="case_id">
                             <input type="hidden" id="trans-action-name" name="action_name">
-                            <input type="hidden" name="active_email" value="{user_email}">
+                            <input type="hidden" name="active_email" value="{current_u_email}">
 
                             <div class="font-bold text-xs text-indigo-900" id="trans-title">Confirmar Transición</div>
                             
