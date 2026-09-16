@@ -1,5 +1,5 @@
-from fastapi import FastAPI, Request, Form, HTTPException
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi import FastAPI, Request, Form, HTTPException, Depends
+from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
 import uvicorn
 import io
 import pandas as pd
@@ -8,7 +8,7 @@ from typing import Optional, List, Dict
 from pydantic import BaseModel
 from enum import Enum
 
-app = FastAPI(title="Sistema de Gestión PCL - Flujo Limpio")
+app = FastAPI(title="Sistema de Gestión PCL - Login con Contraseña")
 
 # =============================================================
 # MODELOS DE DATOS Y ENUMS
@@ -43,37 +43,25 @@ class UserRole(str, Enum):
     ADMINISTRADOR = "ADMINISTRADOR"
     MEDICO_CALIFICADOR = "MEDICO_CALIFICADOR"
     MEDICO_COMITE = "MEDICO_COMITE"
-    COORDINADOR_REGISTRO = "COORDINADOR_REGISTRO"
-    GESTOR_NOTIFICACIONES = "GESTOR_NOTIFICACIONES"
-    AUDITOR_SISTEMA = "AUDITOR_SISTEMA"
 
-# DIRECTORIO DE USUARIOS REGISTRADOS
+# BASE DE DATOS DE USUARIOS (AUTENTICACIÓN POR CORREO Y CONTRASEÑA)
 USERS_DB: Dict[str, dict] = {
-    "admin": {
-        "username": "admin",
+    "estiven.ayala@codess.org.co": {
         "name": "Estiven Ayala",
-        "role": "ADMINISTRADOR",
-        "email": "estiven.ayala@codess.org.co"
+        "role": UserRole.ADMINISTRADOR,
+        "email": "estiven.ayala@codess.org.co",
+        "password": "123456"
     },
-    "calificador1": {
-        "username": "calificador1",
+    "medico.calificador@pcl.com": {
         "name": "Dra. Marcela Restrepo",
-        "role": "MEDICO_CALIFICADOR",
-        "email": "marcela.restrepo@pcl.com"
-    },
-    "calificador2": {
-        "username": "calificador2",
-        "name": "Dr. Alejandro Gómez",
-        "role": "MEDICO_CALIFICADOR",
-        "email": "alejandro.gomez@pcl.com"
-    },
-    "comite1": {
-        "username": "comite1",
-        "name": "Dr. Carlos Fernando Mora",
-        "role": "MEDICO_COMITE",
-        "email": "carlos.mora@pcl.com"
+        "role": UserRole.MEDICO_CALIFICADOR,
+        "email": "medico.calificador@pcl.com",
+        "password": "123456"
     }
 }
+
+# ALMACENAMIENTO TEMPORAL DE SESIÓN ACTIVA EN MEMORIA
+ACTIVE_SESSIONS: Dict[str, str] = {}
 
 class PCLCase(BaseModel):
     id: str  # ID Consecutivo: 1, 2, 3...
@@ -128,7 +116,7 @@ class AuditEntry(BaseModel):
     comments: str
     assigned_to_info: Optional[str] = None
 
-# MATRIZ ESTRICTA DE TRANSICIONES (TEXTOS LIMPIOS SIN TEXTO NODOS)
+# MATRIZ ESTRICTA DE TRANSICIONES
 STATE_TRANSITIONS_MATRIX = [
     {
         "current_state": ModuleState.REGISTRO, "current_sub_step": SubStep.REGISTRADO,
@@ -209,7 +197,7 @@ STATE_TRANSITIONS_MATRIX = [
     }
 ]
 
-# BASE DE DATOS INICIAL
+# BASE DE DATOS INICIAL DE CASOS
 CASES_DB: List[PCLCase] = [
     PCLCase(
         id="1", document_type="Cédula de Ciudadanía", patient_id="1020485921",
@@ -243,6 +231,65 @@ AUDIT_DB: List[AuditEntry] = [
         assigned_to_info="Lic. Paula Andrea Gómez"
     )
 ]
+
+# LOGIN ENDPOINT
+@app.post("/login")
+def login(email: str = Form(...), password: str = Form(...)):
+    user = USERS_DB.get(email.strip().lower())
+    if not user or user["password"] != password.strip():
+        return HTMLResponse(
+            """<script>alert('Correo o contraseña incorrectos.'); window.location.href='/login-view';</script>"""
+        )
+    
+    # REGISTRAR SESIÓN ACTIVA
+    session_id = f"session_{email.strip().lower()}"
+    ACTIVE_SESSIONS[session_id] = email.strip().lower()
+    
+    response = RedirectResponse(url=f"/?session={session_id}", status_code=303)
+    return response
+
+# VISTA FORMULARIO DE LOGIN
+@app.get("/login-view", response_class=HTMLResponse)
+def login_view():
+    return """
+    <!DOCTYPE html>
+    <html lang="es">
+    <head>
+        <meta charset="UTF-8">
+        <title>Inicio de Sesión - Sistema de Gestión PCL</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+        <style> body { font-family: 'Inter', sans-serif; } </style>
+    </head>
+    <body class="bg-slate-900 flex items-center justify-center min-h-screen p-4">
+        <div class="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-md border border-slate-200">
+            <div class="text-center mb-6">
+                <div class="w-12 h-12 bg-indigo-600 rounded-2xl mx-auto flex items-center justify-center text-white text-xl font-bold mb-3 shadow-lg">⚡</div>
+                <h2 class="text-xl font-bold text-slate-900 tracking-tight">Sistema de Gestión PCL</h2>
+                <p class="text-xs text-slate-500 font-medium mt-1">Ingrese sus credenciales de acceso institucional</p>
+            </div>
+            
+            <form action="/login" method="post" class="space-y-4">
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">Correo Electrónico *</label>
+                    <input type="email" name="email" required placeholder="ejemplo@codess.org.co" class="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-300 font-medium text-slate-800 focus:ring-2 focus:ring-indigo-500 outline-none">
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">Contraseña *</label>
+                    <input type="password" name="password" required placeholder="••••••••" class="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-300 font-medium text-slate-800 focus:ring-2 focus:ring-indigo-500 outline-none">
+                </div>
+                <button type="submit" class="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow-md transition-all">Iniciar Sesión &rarr;</button>
+            </form>
+
+            <div class="mt-6 pt-4 border-t border-slate-100 text-[11px] text-slate-500 space-y-1">
+                <div class="font-bold text-slate-700">Credenciales de Acceso:</div>
+                <div>• <strong>Admin:</strong> estiven.ayala@codess.org.co / 123456</div>
+                <div>• <strong>Médico:</strong> medico.calificador@pcl.com / 123456</div>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
 
 # EXPORTACIÓN EXCEL DE ESTADOS
 @app.get("/api/export-excel-estados")
@@ -327,12 +374,11 @@ def get_case_detail(case_id: str):
     audits = [a for a in AUDIT_DB if a.case_id == case_id]
     return {"case": case.dict(), "rules": rules, "audits": [a.dict() for a in audits]}
 
-# API EJECUTAR TRANSICIÓN
 @app.post("/api/cases/transition")
 def transition_case(
     case_id: str = Form(...), action_name: str = Form(...), comments: str = Form(...),
     new_assignee: Optional[str] = Form(None), pcl_percentage: Optional[float] = Form(None),
-    requested_docs: Optional[str] = Form(None), active_user_id: Optional[str] = Form("admin")
+    requested_docs: Optional[str] = Form(None), active_email: Optional[str] = Form("estiven.ayala@codess.org.co")
 ):
     case = next((c for c in CASES_DB if c.id == case_id), None)
     if not case:
@@ -345,7 +391,7 @@ def transition_case(
     if rule.get("requires_reason") and not comments.strip():
         raise HTTPException(status_code=400, detail="Es obligatorio ingresar las observaciones de auditoría.")
 
-    u_data = USERS_DB.get(active_user_id, USERS_DB["admin"])
+    u_data = USERS_DB.get(active_email, USERS_DB["estiven.ayala@codess.org.co"])
 
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     origin_state = case.module_state.value
@@ -390,7 +436,7 @@ def transition_case(
 
     audit = AuditEntry(
         id=event_id, case_id=case_id,
-        user_name=u_data["name"], user_email=u_data["email"], user_role=u_data["role"],
+        user_name=u_data["name"], user_email=u_data["email"], user_role=u_data["role"].value,
         action=action_name, origin_state=origin_state, destination_state=case.module_state.value,
         origin_sub_step=origin_sub_step, destination_sub_step=case.sub_step.value,
         timestamp=now_str, comments=comments, assigned_to_info=assigned_info
@@ -398,7 +444,6 @@ def transition_case(
     AUDIT_DB.insert(0, audit)
     return {"success": True, "case": case.dict()}
 
-# RADICAR CASO NUEVO
 @app.post("/api/cases/create")
 def create_case(
     document_type: str = Form(...), patient_id: str = Form(...), patient_name: str = Form(...),
@@ -406,7 +451,7 @@ def create_case(
     qualification_type: str = Form(...), it_days: int = Form(...), company_name: str = Form(...),
     company_id: Optional[str] = Form(None), axa_filing_date: str = Form(...),
     assigned_doctor: Optional[str] = Form(None), notes: Optional[str] = Form(None),
-    active_user_id: Optional[str] = Form("admin")
+    active_email: Optional[str] = Form("estiven.ayala@codess.org.co")
 ):
     if not patient_id.isdigit():
         raise HTTPException(status_code=400, detail="El Número de Documento debe contener únicamente números (0-9).")
@@ -415,7 +460,7 @@ def create_case(
     if not axa_filing_date.strip():
         raise HTTPException(status_code=400, detail="La Fecha de Radicación AXA es obligatoria.")
 
-    u_data = USERS_DB.get(active_user_id, USERS_DB["admin"])
+    u_data = USERS_DB.get(active_email, USERS_DB["estiven.ayala@codess.org.co"])
 
     case_id = str(len(CASES_DB) + 1)
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -435,7 +480,7 @@ def create_case(
 
     audit = AuditEntry(
         id=event_id, case_id=case_id, user_name=u_data["name"],
-        user_email=u_data["email"], user_role=u_data["role"],
+        user_email=u_data["email"], user_role=u_data["role"].value,
         action="REGISTRAR_Y_ASIGNAR_CASO", origin_state="REGISTRO", destination_state="CALIFICACION_PCL",
         origin_sub_step="REGISTRADO", destination_sub_step="ASIGNADO", timestamp=now_str,
         comments=f"Creación formal e ingreso directo a Calificación PCL. Asignado a: {doc_assigned}.",
@@ -446,11 +491,18 @@ def create_case(
     AUDIT_DB.insert(0, audit)
     return {"success": True, "id": case_id}
 
-# FRONTEND
+# FRONTEND PRINCIPAL CON AUTENTICACIÓN
 @app.get("/", response_class=HTMLResponse)
-def serve_ui(user_id: Optional[str] = "admin"):
-    current_u = USERS_DB.get(user_id, USERS_DB["admin"])
-    
+def serve_ui(session: Optional[str] = None):
+    # SI NO HAY SESIÓN ACTIVA, REDIRIGIR AL LOGIN
+    if not session or session not in ACTIVE_SESSIONS:
+        return RedirectResponse(url="/login-view")
+
+    user_email = ACTIVE_SESSIONS[session]
+    current_u = USERS_DB.get(user_email, USERS_DB["estiven.ayala@codess.org.co"])
+    role = current_u["role"]
+    is_admin = (role == UserRole.ADMINISTRADOR)
+
     en_tramite = len([c for c in CASES_DB if c.module_state not in [ModuleState.CIERRE_ADMINISTRATIVO, ModuleState.GESTIONADO]])
     finalizados = len(CASES_DB) - en_tramite
 
@@ -488,12 +540,6 @@ def serve_ui(user_id: Optional[str] = "admin"):
             """
         return cards
 
-    # SELECCIÓN DE USUARIO INTEGRADA EN LA CABECERA
-    user_options = ""
-    for u_key, u_val in USERS_DB.items():
-        selected = "selected" if u_key == user_id else ""
-        user_options += f'<option value="{u_key}" {selected}>{u_val["name"]} ({u_val["role"]})</option>'
-
     return f"""
     <!DOCTYPE html>
     <html lang="es">
@@ -513,14 +559,9 @@ def serve_ui(user_id: Optional[str] = "admin"):
                         <div>
                             <div class="flex items-center gap-2">
                                 <h1 class="text-xl font-bold text-slate-900 tracking-tight">Sistema de Gestión PCL</h1>
-                                <span class="text-xs font-semibold px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200">5 Módulos</span>
+                                <span class="text-xs font-semibold px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200">{role.value}</span>
                             </div>
-                            <div class="flex items-center gap-2 mt-1">
-                                <span class="text-xs text-slate-500 font-medium">Perfil Activo:</span>
-                                <select onchange="window.location.href='/?user_id='+this.value" class="text-xs font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-md px-2 py-0.5 outline-none cursor-pointer">
-                                    {user_options}
-                                </select>
-                            </div>
+                            <p class="text-xs text-slate-500 font-medium">Usuario: <strong class="text-indigo-700">{current_u['name']}</strong> ({current_u['email']})</p>
                         </div>
                     </div>
                     <div class="flex flex-wrap items-center gap-2.5">
@@ -531,30 +572,34 @@ def serve_ui(user_id: Optional[str] = "admin"):
                             <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
                             <span>Finalizados: <strong>{finalizados}</strong></span>
                         </div>
-                        <button onclick="document.getElementById('modal-nuevo').classList.remove('hidden')" class="px-3.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold shadow-xs">+ Nuevo Caso</button>
+                        {f'<button onclick="document.getElementById(\'modal-nuevo\').classList.remove(\'hidden\')" class="px-3.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold shadow-xs">+ Nuevo Caso</button>' if is_admin else ''}
                         
                         <a href="/api/export-excel-estados" class="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shadow-xs">📄 Excel Estados</a>
-                        <a href="/api/export-excel-auditoria" class="px-3 py-2 rounded-lg bg-indigo-800 hover:bg-indigo-900 text-white text-xs font-semibold shadow-xs">📜 Excel Auditoría</a>
+                        {f'<a href="/api/export-excel-auditoria" class="px-3 py-2 rounded-lg bg-indigo-800 hover:bg-indigo-900 text-white text-xs font-semibold shadow-xs">📜 Excel Auditoría</a>' if is_admin else ''}
+                        <a href="/login-view" class="px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold border">🚪 Cerrar Sesión</a>
                     </div>
                 </div>
                 
                 <div class="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between gap-2 overflow-x-auto">
                     <div class="flex items-center space-x-1.5">
-                        <button onclick="switchTab('mod-nuevos')" id="btn-mod-nuevos" class="tab-btn px-3 py-2 rounded-xl text-xs font-bold bg-slate-900 text-white shadow-xs whitespace-nowrap">✨ Casos Nuevos</button>
-                        <button onclick="switchTab('mod-admin')" id="btn-mod-admin" class="tab-btn px-3 py-2 rounded-xl text-xs font-bold bg-white text-slate-700 border border-slate-200 whitespace-nowrap">📁 Gestión Admin</button>
-                        <button onclick="switchTab('mod-calificacion')" id="btn-mod-calificacion" class="tab-btn px-3 py-2 rounded-xl text-xs font-bold bg-white text-slate-700 border border-slate-200 whitespace-nowrap">🩺 Calificación PCL</button>
-                        <button onclick="switchTab('mod-comite')" id="btn-mod-comite" class="tab-btn px-3 py-2 rounded-xl text-xs font-bold bg-white text-slate-700 border border-slate-200 whitespace-nowrap">👥 Comité</button>
-                        <button onclick="switchTab('mod-cierre')" id="btn-mod-cierre" class="tab-btn px-3 py-2 rounded-xl text-xs font-bold bg-white text-slate-700 border border-slate-200 whitespace-nowrap">📤 Pendiente Cierre</button>
+                        {f'<button onclick="switchTab(\'mod-nuevos\')" id="btn-mod-nuevos" class="tab-btn px-3 py-2 rounded-xl text-xs font-bold bg-slate-900 text-white shadow-xs whitespace-nowrap">✨ Casos Nuevos</button>' if is_admin else ''}
+                        {f'<button onclick="switchTab(\'mod-admin\')" id="btn-mod-admin" class="tab-btn px-3 py-2 rounded-xl text-xs font-bold bg-white text-slate-700 border border-slate-200 whitespace-nowrap">📁 Gestión Admin</button>' if is_admin else ''}
+                        <button onclick="switchTab('mod-calificacion')" id="btn-mod-calificacion" class="tab-btn px-3 py-2 rounded-xl text-xs font-bold {"bg-slate-900 text-white shadow-xs" if not is_admin else "bg-white text-slate-700 border border-slate-200"} whitespace-nowrap">🩺 Calificación PCL</button>
+                        {f'<button onclick="switchTab(\'mod-comite\')" id="btn-mod-comite" class="tab-btn px-3 py-2 rounded-xl text-xs font-bold bg-white text-slate-700 border border-slate-200 whitespace-nowrap">👥 Comité</button>' if is_admin else ''}
+                        {f'<button onclick="switchTab(\'mod-cierre\')" id="btn-mod-cierre" class="tab-btn px-3 py-2 rounded-xl text-xs font-bold bg-white text-slate-700 border border-slate-200 whitespace-nowrap">📤 Pendiente Cierre</button>' if is_admin else ''}
                     </div>
+                    {f'''
                     <div class="flex items-center space-x-1 pl-2 border-l border-slate-200">
                         <button onclick="switchTab('mod-finalizados')" id="btn-mod-finalizados" class="tab-btn px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-white text-slate-600 whitespace-nowrap">📦 Finalizados</button>
                         <button onclick="switchTab('mod-auditoria')" id="btn-mod-auditoria" class="tab-btn px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-white text-slate-600 whitespace-nowrap">📜 Auditoría General</button>
                     </div>
+                    ''' if is_admin else ''}
                 </div>
             </div>
         </header>
 
         <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+            {f'''
             <div id="mod-nuevos" class="tab-content space-y-4">
                 <div class="bg-gradient-to-br from-indigo-50 via-white to-indigo-50/40 p-5 rounded-2xl border border-indigo-100 flex items-center justify-between">
                     <div>
@@ -569,11 +614,13 @@ def serve_ui(user_id: Optional[str] = "admin"):
             <div id="mod-admin" class="tab-content hidden space-y-4">
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{render_cases_cards([ModuleState.REGISTRO, ModuleState.EN_SOLICITUD_DOCUMENTOS])}</div>
             </div>
+            ''' if is_admin else ''}
 
-            <div id="mod-calificacion" class="tab-content hidden space-y-4">
+            <div id="mod-calificacion" class="tab-content {"space-y-4" if not is_admin else "hidden space-y-4"}">
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{render_cases_cards([ModuleState.CALIFICACION_PCL])}</div>
             </div>
 
+            {f'''
             <div id="mod-comite" class="tab-content hidden space-y-4">
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{render_cases_cards([ModuleState.COMITE])}</div>
             </div>
@@ -598,6 +645,7 @@ def serve_ui(user_id: Optional[str] = "admin"):
                     </table>
                 </div>
             </div>
+            ''' if is_admin else ''}
         </main>
 
         <!-- MODAL FORMULARIO INGRESO -->
@@ -609,7 +657,7 @@ def serve_ui(user_id: Optional[str] = "admin"):
                 </div>
                 
                 <form id="form-case" class="p-6 space-y-4 max-h-[80vh] overflow-y-auto">
-                    <input type="hidden" name="active_user_id" value="{user_id}">
+                    <input type="hidden" name="active_email" value="{user_email}">
                     <div class="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-3">
                         <h3 class="text-xs font-bold uppercase text-slate-800 border-b pb-1">1. Identificación del Paciente / Dictaminado</h3>
                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -682,7 +730,6 @@ def serve_ui(user_id: Optional[str] = "admin"):
                                 <label class="block text-xs font-bold text-slate-700 mb-1">Médico Calificador Asignado *</label>
                                 <select name="assigned_doctor" class="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 font-semibold">
                                     <option>Dra. Marcela Restrepo (Médico Calificador Especialista)</option>
-                                    <option>Dr. Alejandro Gómez (Médico Calificador Especialista)</option>
                                     <option>Dr. Carlos Fernando Mora (Comité Médico)</option>
                                 </select>
                             </div>
@@ -724,7 +771,7 @@ def serve_ui(user_id: Optional[str] = "admin"):
                         <form id="form-transition" class="hidden p-4 rounded-xl border border-indigo-200 bg-indigo-50/30 space-y-3">
                             <input type="hidden" id="trans-case-id" name="case_id">
                             <input type="hidden" id="trans-action-name" name="action_name">
-                            <input type="hidden" name="active_user_id" value="{user_id}">
+                            <input type="hidden" name="active_email" value="{user_email}">
 
                             <div class="font-bold text-xs text-indigo-900" id="trans-title">Confirmar Transición</div>
                             
@@ -736,7 +783,6 @@ def serve_ui(user_id: Optional[str] = "admin"):
                                     </optgroup>
                                     <optgroup label="Médicos Calificadores">
                                         <option>Dra. Marcela Restrepo (Médico Calificador Especialista)</option>
-                                        <option>Dr. Alejandro Gómez (Médico Calificador Especialista)</option>
                                     </optgroup>
                                     <optgroup label="Gestión y Registro">
                                         <option>Lic. Paula Andrea Gómez (Coordinadora de Registro)</option>
@@ -941,18 +987,21 @@ def serve_ui(user_id: Optional[str] = "admin"):
                 }}
             }});
 
-            document.getElementById('form-case').addEventListener('submit', async (e) => {{
-                e.preventDefault();
-                const formData = new FormData(e.target);
-                const res = await fetch('/api/cases/create', {{ method: 'POST', body: formData }});
+            const formCase = document.getElementById('form-case');
+            if (formCase) {{
+                formCase.addEventListener('submit', async (e) => {{
+                    e.preventDefault();
+                    const formData = new FormData(e.target);
+                    const res = await fetch('/api/cases/create', {{ method: 'POST', body: formData }});
 
-                if (res.ok) {{
-                    window.location.reload();
-                }} else {{
-                    const data = await res.json();
-                    alert(data.detail || "Error al radicar el caso.");
-                }}
-            }});
+                    if (res.ok) {{
+                        window.location.reload();
+                    }} else {{
+                        const data = await res.json();
+                        alert(data.detail || "Error al radicar el caso.");
+                    }}
+                }});
+            }}
         </script>
     </body>
     </html>
