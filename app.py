@@ -101,13 +101,9 @@ Base.metadata.create_all(bind=engine)
 db_init = SessionLocal()
 if db_init.query(UserModel).count() == 0:
     db_init.add(UserModel(name="Estiven Ayala", email="estiven.ayala@codess.org.co", password="123456", role="ADMINISTRADOR"))
-    
-    # Médicos Calificadores PCL
     db_init.add(UserModel(name="Karen Margarita Coba Macias", email="karen.coba@pcl.com", password="123456", role="MEDICO_CALIFICADOR"))
     db_init.add(UserModel(name="Nataly Ruiz", email="nataly.ruiz@pcl.com", password="123456", role="MEDICO_CALIFICADOR"))
     db_init.add(UserModel(name="Laura Vanessa Deyanira Rua Pertuz", email="laura.rua@pcl.com", password="123456", role="MEDICO_CALIFICADOR"))
-    
-    # Médicos Comité
     db_init.add(UserModel(name="Dr. Carlos Fernando Mora", email="carlos.mora@pcl.com", password="123456", role="MEDICO_COMITE"))
     db_init.add(UserModel(name="Yinibeth Paola Leyton Castro", email="yinibeth.leyton@pcl.com", password="123456", role="MEDICO_COMITE"))
     db_init.commit()
@@ -118,7 +114,7 @@ db_init.close()
 # APLICACIÓN FASTAPI Y LÓGICA DE NEGOCIO
 # =============================================================
 
-app = FastAPI(title="Sistema de Gestión PCL - Formulario Pericial Integrado")
+app = FastAPI(title="Sistema de Gestión PCL - Edición de Contraseñas")
 
 ACTIVE_SESSIONS: Dict[str, str] = {}
 
@@ -253,11 +249,12 @@ def create_user(
     db.close()
     return {"success": True}
 
-# API USUARIOS - EDITAR PERMISOS/ROL
+# API USUARIOS - EDITAR PERMISOS Y CONTRASEÑA
 @app.post("/api/users/update")
-def update_user_role(
+def update_user_role_and_pass(
     email: str = Form(...),
-    role: str = Form(...)
+    role: str = Form(...),
+    password: Optional[str] = Form(None)
 ):
     db = SessionLocal()
     clean_email = email.strip().lower()
@@ -267,6 +264,9 @@ def update_user_role(
         raise HTTPException(status_code=404, detail="Usuario no encontrado.")
     
     user.role = role
+    if password and password.strip():
+        user.password = password.strip()
+
     db.commit()
     db.close()
     return {"success": True}
@@ -356,8 +356,7 @@ def export_excel_estados():
         "ID Caso": str(c.id), "Paciente": c.patient_name, "Tipo Doc": c.document_type,
         "N° Doc": c.patient_id, "# Siniestro": c.claim_number or "PENDIENTE", "Origen": c.origin_type or "Laboral",
         "Evento": c.event_type or "AT", "Tipo Calificación": c.qualification_type, "Días IT": c.it_days or 0,
-        "Empresa": c.company_name or "N/A", "NIT": c.company_id or "N/A", "Módulo Actual": c.module_state,
-        "Sub-Paso": c.sub_step, "Responsable Asignado": c.assigned_to,
+        "Módulo Actual": c.module_state, "Sub-Paso": c.sub_step, "Responsable Asignado": c.assigned_to,
         "% PCL Dictamen": f"{c.pcl_percentage}%" if c.pcl_percentage is not None else "--",
         "Fecha Radicación AXA": c.axa_filing_date, "Fecha creacion App": c.created_at,
         "Fecha Asigancion PCL": c.fecha_asignacion_pcl or "N/A", "Fecha Calificacion": c.fecha_calificacion or "N/A",
@@ -434,8 +433,6 @@ def transition_case(
     origin_type: Optional[str] = Form(None),
     event_type: Optional[str] = Form(None),
     it_days: Optional[int] = Form(None),
-    company_name: Optional[str] = Form(None),
-    company_id: Optional[str] = Form(None),
     active_email: Optional[str] = Form("estiven.ayala@codess.org.co")
 ):
     db = SessionLocal()
@@ -466,13 +463,10 @@ def transition_case(
     case.sub_step = rule["destination_sub_step"].value if isinstance(rule["destination_sub_step"], SubStep) else str(rule["destination_sub_step"])
     case.updated_at = now_str
 
-    # ACTUALIZAR CAMPOS PERICIALES EN CASO DE DILIGENCIARSE EN LA GESTIÓN
     if claim_number and claim_number.strip(): case.claim_number = claim_number.strip()
     if origin_type and origin_type.strip(): case.origin_type = origin_type.strip()
     if event_type and event_type.strip(): case.event_type = event_type.strip()
     if it_days is not None: case.it_days = it_days
-    if company_name and company_name.strip(): case.company_name = company_name.strip().upper()
-    if company_id and company_id.strip(): case.company_id = company_id.strip()
 
     assigned_info = None
     if rule.get("requires_assignee") and new_assignee and new_assignee.strip():
@@ -644,7 +638,6 @@ def serve_ui(session: Optional[str] = None):
                         <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-50 text-amber-800 border">{c.it_days or 0} Días IT</span>
                         <span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-violet-50 text-violet-800 border">PCL: {pcl_val}</span>
                     </div>
-                    <div class="text-xs text-slate-600 flex items-center gap-1.5 mt-2">🏢 <span class="truncate">{c.company_name or 'NO ESPECIFICADO'}</span></div>
                 </div>
                 <div class="pt-3 mt-3 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500">
                     <span>👤 {c.assigned_to}</span>
@@ -667,7 +660,7 @@ def serve_ui(session: Optional[str] = None):
                 <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">{u.role}</span>
             </td>
             <td class="py-3 px-4 flex items-center gap-2">
-                <button onclick="editUserRole('{u.email}', '{u.role}', '{u.name}')" class="px-2.5 py-1 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 font-bold hover:bg-indigo-100 transition-all">✏️ Editar Permisos</button>
+                <button onclick="editUserRole('{u.email}', '{u.role}', '{u.name}')" class="px-2.5 py-1 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 font-bold hover:bg-indigo-100 transition-all">✏️ Editar Permisos / Clave</button>
                 {btn_delete}
             </td>
         </tr>
@@ -833,11 +826,11 @@ def serve_ui(session: Optional[str] = None):
             ''' if is_admin else ''}
         </main>
 
-        <!-- MODAL EDITAR PERMISOS/ROL DE USUARIO -->
+        <!-- MODAL EDITAR PERMISOS/ROL Y CONTRASEÑA DE USUARIO -->
         <div id="modal-edit-user" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs hidden">
             <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-md p-6 space-y-4">
                 <div class="flex justify-between items-center border-b pb-2">
-                    <h3 class="text-sm font-bold text-slate-900">✏️ Modificar Permisos de Usuario</h3>
+                    <h3 class="text-sm font-bold text-slate-900">✏️ Modificar Permisos y Contraseña</h3>
                     <button onclick="document.getElementById('modal-edit-user').classList.add('hidden')" class="font-bold text-slate-500 hover:text-slate-800">&times;</button>
                 </div>
                 <form id="form-edit-user" class="space-y-3 text-xs">
@@ -854,9 +847,13 @@ def serve_ui(session: Optional[str] = None):
                             <option value="ADMINISTRADOR">🔑 Administrador (Acceso Total)</option>
                         </select>
                     </div>
+                    <div>
+                        <label class="block font-bold text-slate-700 mb-1">Cambiar Contraseña (Opcional)</label>
+                        <input type="password" id="edit-user-pass" name="password" placeholder="Dejar en blanco para mantener la actual" class="w-full px-3 py-2 rounded-lg border border-slate-300">
+                    </div>
                     <div class="flex justify-end gap-2 pt-3 border-t">
                         <button type="button" onclick="document.getElementById('modal-edit-user').classList.add('hidden')" class="px-3 py-1.5 border rounded-lg font-semibold">Cancelar</button>
-                        <button type="submit" class="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg shadow-xs">Actualizar Permisos</button>
+                        <button type="submit" class="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg shadow-xs">Guardar Cambios</button>
                     </div>
                 </form>
             </div>
@@ -961,7 +958,7 @@ def serve_ui(session: Optional[str] = None):
                             <!-- CAMPOS PERICIALES COMPLEMENTARIOS QUE SE COMPLETAN AL GESTIONAR -->
                             <div id="field-pericial-extra" class="space-y-3 p-3 bg-white rounded-lg border border-slate-200 text-xs">
                                 <div class="font-bold text-slate-800 border-b pb-1">📋 Información Técnica de Peritación (Diligenciada por el Calificador PCL)</div>
-                                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                                     <div>
                                         <label class="block font-bold text-slate-700 mb-1"># Siniestro *</label>
                                         <input type="text" id="m-inp-claim" name="claim_number" required placeholder="Ej: 8920194" onkeypress="return event.charCode >= 48 && event.charCode <= 57" class="w-full px-3 py-1.5 rounded border border-slate-300 font-mono">
@@ -984,14 +981,6 @@ def serve_ui(session: Optional[str] = None):
                                     <div>
                                         <label class="block font-bold text-slate-700 mb-1">Días IT *</label>
                                         <input type="number" id="m-inp-it" name="it_days" required min="0" value="180" class="w-full px-3 py-1.5 rounded border border-slate-300">
-                                    </div>
-                                    <div>
-                                        <label class="block font-bold text-slate-700 mb-1">Empresa / Empleador *</label>
-                                        <input type="text" id="m-inp-company" name="company_name" required placeholder="EJ: EMPRESA S.A.S." oninput="this.value = this.value.toUpperCase()" class="w-full px-3 py-1.5 rounded border border-slate-300 uppercase">
-                                    </div>
-                                    <div>
-                                        <label class="block font-bold text-slate-700 mb-1">NIT / ID Empresa</label>
-                                        <input type="text" id="m-inp-company-id" name="company_id" placeholder="Ej: 900.284.195-2" class="w-full px-3 py-1.5 rounded border border-slate-300 font-mono">
                                     </div>
                                 </div>
                             </div>
@@ -1032,7 +1021,6 @@ def serve_ui(session: Optional[str] = None):
                                 <div><strong>Nombre:</strong> <span id="d-name"></span></div>
                                 <div><strong>Documento:</strong> <span id="d-doc"></span></div>
                                 <div><strong># Siniestro:</strong> <span id="d-claim" class="font-bold text-indigo-700"></span></div>
-                                <div><strong>Empresa:</strong> <span id="d-company"></span></div>
                                 <div><strong>Fecha Radicación AXA:</strong> <span id="d-insurer" class="font-mono font-semibold text-slate-900"></span></div>
                             </div>
                             <div class="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-2">
@@ -1093,6 +1081,7 @@ def serve_ui(session: Optional[str] = None):
                 document.getElementById('edit-user-email').value = email;
                 document.getElementById('edit-user-name').value = name + ' (' + email + ')';
                 document.getElementById('edit-user-role').value = currentRole;
+                document.getElementById('edit-user-pass').value = '';
                 document.getElementById('modal-edit-user').classList.remove('hidden');
             }}
 
@@ -1118,11 +1107,11 @@ def serve_ui(session: Optional[str] = None):
                 const formData = new FormData(e.target);
                 const res = await fetch('/api/users/update', {{ method: 'POST', body: formData }});
                 if (res.ok) {{
-                    alert('Permisos actualizados correctamente.');
+                    alert('Usuario actualizado correctamente.');
                     window.location.reload();
                 }} else {{
                     const data = await res.json();
-                    alert(data.detail || "Error al actualizar los permisos.");
+                    alert(data.detail || "Error al actualizar el usuario.");
                 }}
             }});
 
@@ -1139,12 +1128,11 @@ def serve_ui(session: Optional[str] = None):
                 const audits = data.audits;
 
                 document.getElementById('m-case-id').innerText = "ID Caso: " + c.id + " (" + c.module_state + " - " + c.sub_step + ")";
-                document.getElementById('m-patient-name').innerText = c.patient_name + " | C.C. " + c.patient_id + " | " + (c.company_name || "NO ESPECIFICADO");
+                document.getElementById('m-patient-name').innerText = c.patient_name + " | C.C. " + c.patient_id;
 
                 document.getElementById('d-name').innerText = c.patient_name;
                 document.getElementById('d-doc').innerText = c.document_type + " " + c.patient_id;
                 document.getElementById('d-claim').innerText = "#" + (c.claim_number || "PENDIENTE");
-                document.getElementById('d-company').innerText = (c.company_name || "NO ESPECIFICADO") + (c.company_id ? " (NIT: " + c.company_id + ")" : "");
                 document.getElementById('d-insurer').innerText = c.axa_filing_date ? c.axa_filing_date : "N/A";
                 document.getElementById('d-origin').innerText = (c.origin_type || "Laboral") + " - " + (c.event_type || "AT") + " (" + c.qualification_type + ")";
                 document.getElementById('d-it').innerText = (c.it_days || 0) + " Días";
@@ -1205,14 +1193,11 @@ def serve_ui(session: Optional[str] = None):
                 document.getElementById('trans-action-name').value = actionName;
                 document.getElementById('trans-title').innerText = "Acción Seleccionada: " + actionName;
 
-                // PRE-Cargar valores existentes en el formulario pericial
                 if (currentCaseData) {{
                     if (currentCaseData.claim_number && currentCaseData.claim_number !== "PENDIENTE") document.getElementById('m-inp-claim').value = currentCaseData.claim_number;
                     if (currentCaseData.origin_type) document.getElementById('m-inp-origin').value = currentCaseData.origin_type;
                     if (currentCaseData.event_type) document.getElementById('m-inp-event').value = currentCaseData.event_type;
                     if (currentCaseData.it_days !== null && currentCaseData.it_days !== undefined) document.getElementById('m-inp-it').value = currentCaseData.it_days;
-                    if (currentCaseData.company_name && currentCaseData.company_name !== "NO ESPECIFICADO") document.getElementById('m-inp-company').value = currentCaseData.company_name;
-                    if (currentCaseData.company_id) document.getElementById('m-inp-company-id').value = currentCaseData.company_id;
                 }}
 
                 const fAssignee = document.getElementById('field-assignee');
