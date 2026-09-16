@@ -39,12 +39,12 @@ class CaseModel(Base):
     document_type = Column(String(50), nullable=False)
     patient_id = Column(String(20), nullable=False)
     patient_name = Column(String(150), nullable=False)
-    claim_number = Column(String(30), nullable=False)
-    origin_type = Column(String(20), nullable=False)
-    event_type = Column(String(10), nullable=False)
+    claim_number = Column(String(30), nullable=True, default="PENDIENTE")
+    origin_type = Column(String(20), nullable=True, default="Laboral")
+    event_type = Column(String(10), nullable=True, default="AT")
     qualification_type = Column(String(20), nullable=False)
-    it_days = Column(Integer, nullable=False)
-    company_name = Column(String(150), nullable=False)
+    it_days = Column(Integer, nullable=True, default=0)
+    company_name = Column(String(150), nullable=True, default="NO ESPECIFICADO")
     company_id = Column(String(30), nullable=True)
     axa_filing_date = Column(String(20), nullable=False)
     insurer = Column(String(100), default="AXA Colpatria Seguros")
@@ -97,48 +97,18 @@ class AuditModel(Base):
 
 Base.metadata.create_all(bind=engine)
 
-# SEMBRAR USUARIOS POR DEFECTO SI LA TABLA ESTÁ VACÍA
+# SEMBRAR USUARIOS POR DEFECTO CON LA LISTA SOLICITADA
 db_init = SessionLocal()
 if db_init.query(UserModel).count() == 0:
     db_init.add(UserModel(name="Estiven Ayala", email="estiven.ayala@codess.org.co", password="123456", role="ADMINISTRADOR"))
-    db_init.add(UserModel(name="Dra. Marcela Restrepo", email="medico.calificador@pcl.com", password="123456", role="MEDICO_CALIFICADOR"))
-    db_init.add(UserModel(name="Dr. Carlos Fernando Mora", email="medico.comite@pcl.com", password="123456", role="MEDICO_COMITE"))
-    db_init.commit()
-
-# SEMBRAR CASOS INICIALES SI LA TABLA ESTÁ VACÍA
-if db_init.query(CaseModel).count() == 0:
-    c1 = CaseModel(
-        document_type="Cédula de Ciudadanía", patient_id="1020485921",
-        patient_name="ANDRÉS FELIPE MORALES CASTRO", claim_number="8920194", origin_type="Laboral",
-        event_type="AT", qualification_type="ATEL", it_days=180, company_name="MANUFACTURAS ANDINAS S.A.S.",
-        company_id="900.284.195-2", axa_filing_date="2026-09-09", insurer="AXA Colpatria Seguros",
-        module_state="REGISTRO", sub_step="REGISTRADO",
-        assigned_to="Lic. Paula Andrea Gómez", assigned_role="ADMINISTRADOR",
-        created_by="estiven.ayala@codess.org.co", created_at="2026-09-10 08:30:00", updated_at="2026-09-10 08:30:00",
-        notes="Expediente radicado con folios iniciales."
-    )
-    c2 = CaseModel(
-        document_type="Cédula de Ciudadanía", patient_id="52893412",
-        patient_name="GLORIA ESPERANZA RINCÓN ORTIZ", claim_number="7829103", origin_type="Laboral",
-        event_type="AT", qualification_type="COMBO", it_days=240, company_name="TRANSPORTES Y LOGÍSTICA EXPRESS",
-        company_id="860.012.784-1", axa_filing_date="2026-09-07", insurer="Seguros Bolívar ARL",
-        module_state="CALIFICACION_PCL", sub_step="ASIGNADO",
-        assigned_to="Dra. Marcela Restrepo", assigned_role="MEDICO_CALIFICADOR",
-        created_by="paula.gomez@pcl-registro.co", created_at="2026-09-08 10:15:00", updated_at="2026-09-09 14:20:00",
-        fecha_asignacion_pcl="2026-09-09 14:20:00"
-    )
-    db_init.add(c1)
-    db_init.add(c2)
-    db_init.commit()
-
-    a1 = AuditModel(
-        case_id=1, user_name="Estiven Ayala", user_email="estiven.ayala@codess.org.co", user_role="ADMINISTRADOR",
-        action="REGISTRAR_CASO", origin_state="REGISTRO", destination_state="REGISTRO",
-        origin_sub_step="REGISTRADO", destination_sub_step="REGISTRADO",
-        timestamp="2026-09-10 08:30:00", comments="Radicación inicial del caso en la plataforma.",
-        assigned_to_info="Lic. Paula Andrea Gómez"
-    )
-    db_init.add(a1)
+    
+    # Médicos Calificadores PCL
+    db_init.add(UserModel(name="Karen Margarita Coba Macias", email="karen.coba@pcl.com", password="123456", role="MEDICO_CALIFICADOR"))
+    db_init.add(UserModel(name="Nataly Ruiz", email="nataly.ruiz@pcl.com", password="123456", role="MEDICO_CALIFICADOR"))
+    db_init.add(UserModel(name="Laura Vanessa Deyanira Rua Pertuz", email="laura.rua@pcl.com", password="123456", role="MEDICO_CALIFICADOR"))
+    
+    # Médicos Comité
+    db_init.add(UserModel(name="Yinibeth Paola Leyton Castro", email="yinibeth.leyton@pcl.com", password="123456", role="MEDICO_COMITE"))
     db_init.commit()
 
 db_init.close()
@@ -147,7 +117,7 @@ db_init.close()
 # APLICACIÓN FASTAPI Y LÓGICA DE NEGOCIO
 # =============================================================
 
-app = FastAPI(title="Sistema de Gestión PCL - Administración Completa de Usuarios")
+app = FastAPI(title="Sistema de Gestión PCL - Formulario Simplificado")
 
 ACTIVE_SESSIONS: Dict[str, str] = {}
 
@@ -383,9 +353,9 @@ def export_excel_estados():
     output = io.BytesIO()
     cases_data = [{
         "ID Caso": str(c.id), "Paciente": c.patient_name, "Tipo Doc": c.document_type,
-        "N° Doc": c.patient_id, "# Siniestro": c.claim_number, "Origen": c.origin_type,
-        "Evento": c.event_type, "Tipo Calificación": c.qualification_type, "Días IT": c.it_days,
-        "Empresa": c.company_name, "NIT": c.company_id or "N/A", "Módulo Actual": c.module_state,
+        "N° Doc": c.patient_id, "# Siniestro": c.claim_number or "PENDIENTE", "Origen": c.origin_type or "Laboral",
+        "Evento": c.event_type or "AT", "Tipo Calificación": c.qualification_type, "Días IT": c.it_days or 0,
+        "Empresa": c.company_name or "N/A", "NIT": c.company_id or "N/A", "Módulo Actual": c.module_state,
         "Sub-Paso": c.sub_step, "Responsable Asignado": c.assigned_to,
         "% PCL Dictamen": f"{c.pcl_percentage}%" if c.pcl_percentage is not None else "--",
         "Fecha Radicación AXA": c.axa_filing_date, "Fecha creacion App": c.created_at,
@@ -533,19 +503,19 @@ def transition_case(
     db.close()
     return {"success": True, "case": case_dict}
 
+# FORMULARIO REDUCIDO Y SIMPLIFICADO DE RADICACIÓN DE CASO
 @app.post("/api/cases/create")
 def create_case(
-    document_type: str = Form(...), patient_id: str = Form(...), patient_name: str = Form(...),
-    claim_number: str = Form(...), origin_type: str = Form(...), event_type: str = Form(...),
-    qualification_type: str = Form(...), it_days: int = Form(...), company_name: str = Form(...),
-    company_id: Optional[str] = Form(None), axa_filing_date: str = Form(...),
-    assigned_doctor: Optional[str] = Form(None), notes: Optional[str] = Form(None),
+    document_type: str = Form(...),
+    patient_id: str = Form(...),
+    patient_name: str = Form(...),
+    qualification_type: str = Form(...),
+    axa_filing_date: str = Form(...),
+    assigned_doctor: str = Form(...),
     active_email: Optional[str] = Form("estiven.ayala@codess.org.co")
 ):
     if not patient_id.isdigit():
         raise HTTPException(status_code=400, detail="El Número de Documento debe contener únicamente números (0-9).")
-    if not claim_number.isdigit():
-        raise HTTPException(status_code=400, detail="El # de Siniestro debe contener únicamente números (0-9).")
     if not axa_filing_date.strip():
         raise HTTPException(status_code=400, detail="La Fecha de Radicación AXA es obligatoria.")
 
@@ -556,16 +526,28 @@ def create_case(
     u_role = u_data.role if u_data else "ADMINISTRADOR"
 
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    doc_assigned = assigned_doctor or "Dra. Marcela Restrepo"
 
     new_case = CaseModel(
-        document_type=document_type, patient_id=patient_id, patient_name=patient_name.upper(),
-        claim_number=claim_number, origin_type=origin_type, event_type=event_type,
-        qualification_type=qualification_type, it_days=it_days, company_name=company_name.upper(),
-        company_id=company_id, axa_filing_date=axa_filing_date, module_state="CALIFICACION_PCL",
-        sub_step="ASIGNADO", assigned_to=doc_assigned, assigned_role="MEDICO_CALIFICADOR",
-        created_by=u_email, created_at=now_str, updated_at=now_str,
-        notes=notes, pcl_percentage=None, fecha_asignacion_pcl=now_str
+        document_type=document_type,
+        patient_id=patient_id,
+        patient_name=patient_name.upper(),
+        claim_number="PENDIENTE",
+        origin_type="Laboral",
+        event_type="AT",
+        qualification_type=qualification_type,
+        it_days=0,
+        company_name="NO ESPECIFICADO",
+        company_id=None,
+        axa_filing_date=axa_filing_date,
+        module_state="CALIFICACION_PCL",
+        sub_step="ASIGNADO",
+        assigned_to=assigned_doctor,
+        assigned_role="MEDICO_CALIFICADOR",
+        created_by=u_email,
+        created_at=now_str,
+        updated_at=now_str,
+        pcl_percentage=None,
+        fecha_asignacion_pcl=now_str
     )
     db.add(new_case)
     db.commit()
@@ -575,8 +557,8 @@ def create_case(
         case_id=new_case.id, user_name=u_name, user_email=u_email, user_role=u_role,
         action="REGISTRAR_Y_ASIGNAR_CASO", origin_state="REGISTRO", destination_state="CALIFICACION_PCL",
         origin_sub_step="REGISTRADO", destination_sub_step="ASIGNADO", timestamp=now_str,
-        comments=f"Creación formal e ingreso directo a Calificación PCL. Asignado a: {doc_assigned}.",
-        assigned_to_info=doc_assigned
+        comments=f"Creación formal e ingreso directo a Calificación PCL. Asignado a: {assigned_doctor}.",
+        assigned_to_info=assigned_doctor
     )
     db.add(audit)
     db.commit()
@@ -612,6 +594,13 @@ def serve_ui(session: Optional[str] = None):
     audits = db.query(AuditModel).order_by(AuditModel.id.desc()).all()
     users = db.query(UserModel).all()
 
+    # MEDICOS DINAMICOS DESDE LA BASE DE DATOS
+    medicos_pcl_db = [u.name for u in users if u.role in ["MEDICO_CALIFICADOR", "ADMINISTRADOR"]]
+    medicos_comite_db = [u.name for u in users if u.role in ["MEDICO_COMITE", "ADMINISTRADOR"]]
+
+    options_pcl_doc = "".join([f'<option value="{name}">{name}</option>' for name in medicos_pcl_db])
+    options_comite_doc = "".join([f'<option value="{name}">{name}</option>' for name in medicos_comite_db])
+
     en_tramite = len([c for c in cases if c.module_state not in ["CIERRE_ADMINISTRATIVO", "GESTIONADO"]])
     finalizados = len(cases) - en_tramite
 
@@ -632,14 +621,14 @@ def serve_ui(session: Optional[str] = None):
                         <span class="text-[10px] font-bold px-2 py-0.5 rounded border bg-sky-50 text-sky-700 border-sky-200">{c.module_state}</span>
                     </div>
                     <h4 class="text-sm font-bold text-slate-900 uppercase">{c.patient_name}</h4>
-                    <div class="text-xs text-slate-500 font-mono mt-0.5">{c.document_type}: <strong>{c.patient_id}</strong> &bull; Sin. <strong class="text-indigo-700">#{c.claim_number}</strong></div>
+                    <div class="text-xs text-slate-500 font-mono mt-0.5">{c.document_type}: <strong>{c.patient_id}</strong> &bull; Sin. <strong class="text-indigo-700">#{c.claim_number or 'PENDIENTE'}</strong></div>
                     <div class="flex items-center gap-1.5 mt-2 flex-wrap">
                         <span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 border">{c.qualification_type}</span>
-                        <span class="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border">{c.event_type} - {c.origin_type}</span>
-                        <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-50 text-amber-800 border">{c.it_days} Días IT</span>
+                        <span class="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border">{c.event_type or 'AT'} - {c.origin_type or 'Laboral'}</span>
+                        <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-50 text-amber-800 border">{c.it_days or 0} Días IT</span>
                         <span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-violet-50 text-violet-800 border">PCL: {pcl_val}</span>
                     </div>
-                    <div class="text-xs text-slate-600 flex items-center gap-1.5 mt-2">🏢 <span class="truncate">{c.company_name}</span></div>
+                    <div class="text-xs text-slate-600 flex items-center gap-1.5 mt-2">🏢 <span class="truncate">{c.company_name or 'NO ESPECIFICADO'}</span></div>
                 </div>
                 <div class="pt-3 mt-3 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500">
                     <span>👤 {c.assigned_to}</span>
@@ -649,7 +638,6 @@ def serve_ui(session: Optional[str] = None):
             """
         return cards
 
-    # FILAS TABLA USUARIOS CON BOTONES DE ACCIÓN (EDITAR Y ELIMINAR)
     users_rows = ""
     for u in users:
         is_self = (u.email == current_u_email)
@@ -858,9 +846,9 @@ def serve_ui(session: Optional[str] = None):
             </div>
         </div>
 
-        <!-- MODAL FORMULARIO INGRESO -->
+        <!-- MODAL FORMULARIO DE INGRESO RADICACIÓN SIMPLIFICADO -->
         <div id="modal-nuevo" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs hidden">
-            <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-3xl overflow-hidden">
+            <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-2xl overflow-hidden">
                 <div class="px-6 py-4 bg-slate-900 text-white flex items-center justify-between">
                     <h2 class="text-base font-bold">Radicar Nuevo Caso de Peritación PCL</h2>
                     <button onclick="document.getElementById('modal-nuevo').classList.add('hidden')" class="text-slate-400 hover:text-white">&times;</button>
@@ -888,26 +876,14 @@ def serve_ui(session: Optional[str] = None):
                             </div>
                             <div class="sm:col-span-2">
                                 <label class="block text-xs font-bold text-slate-700 mb-1">Nombre Completo (AUTO-MAYÚSCULAS) *</label>
-                                <input type="text" name="patient_name" required oninput="this.value = this.value.toUpperCase()" placeholder="EJ: CARLOS ALBERTO RESTREPO GÓMEZ" class="w-full px-3 py-2 text-xs uppercase font-semibold rounded-lg border border-slate-300">
+                                <input type="text" name="patient_name" required oninput="this.value = this.value.toUpperCase()" placeholder="EJ: LORENA PATRICIA SOLORZANO" class="w-full px-3 py-2 text-xs uppercase font-semibold rounded-lg border border-slate-300">
                             </div>
                         </div>
                     </div>
 
                     <div class="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-3">
                         <h3 class="text-xs font-bold uppercase text-slate-800 border-b pb-1">2. Parámetros Técnicos de Peritación PCL</h3>
-                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                            <div>
-                                <label class="block text-xs font-bold text-slate-700 mb-1"># Siniestro (Solo 0-9) *</label>
-                                <input type="text" name="claim_number" required onkeypress="return event.charCode >= 48 && event.charCode <= 57" placeholder="Ej: 8920194" class="w-full px-3 py-2 text-xs font-mono rounded-lg border border-slate-300">
-                            </div>
-                            <div>
-                                <label class="block text-xs font-bold text-slate-700 mb-1">Tipo de Origen *</label>
-                                <select name="origin_type" class="w-full px-3 py-2 text-xs rounded-lg border border-slate-300"><option>Laboral</option><option>Común</option><option>Mixto</option></select>
-                            </div>
-                            <div>
-                                <label class="block text-xs font-bold text-slate-700 mb-1">Tipo de Evento *</label>
-                                <select name="event_type" class="w-full px-3 py-2 text-xs rounded-lg border border-slate-300"><option>AT</option><option>EL</option></select>
-                            </div>
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                             <div>
                                 <label class="block text-xs font-bold text-slate-700 mb-1">Tipo de Calificación *</label>
                                 <select name="qualification_type" class="w-full px-3 py-2 text-xs rounded-lg border border-slate-300">
@@ -915,32 +891,13 @@ def serve_ui(session: Optional[str] = None):
                                 </select>
                             </div>
                             <div>
-                                <label class="block text-xs font-bold text-slate-700 mb-1">Días IT *</label>
-                                <input type="number" name="it_days" value="180" min="0" class="w-full px-3 py-2 text-xs rounded-lg border border-slate-300">
-                            </div>
-                            <div>
                                 <label class="block text-xs font-bold text-slate-700 mb-1">Fecha Radicación AXA *</label>
                                 <input type="date" name="axa_filing_date" required class="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 bg-white">
                             </div>
-                        </div>
-                    </div>
-
-                    <div class="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-3">
-                        <h3 class="text-xs font-bold uppercase text-slate-800 border-b pb-1">3. Vinculación Laboral y Perito Responsable</h3>
-                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                            <div>
-                                <label class="block text-xs font-bold text-slate-700 mb-1">Empresa / Empleador *</label>
-                                <input type="text" name="company_name" required oninput="this.value = this.value.toUpperCase()" class="w-full px-3 py-2 text-xs uppercase rounded-lg border border-slate-300">
-                            </div>
-                            <div>
-                                <label class="block text-xs font-bold text-slate-700 mb-1">NIT / ID Empresa</label>
-                                <input type="text" name="company_id" placeholder="Ej: 900.284.195-2" class="w-full px-3 py-2 text-xs font-mono rounded-lg border border-slate-300">
-                            </div>
                             <div class="sm:col-span-2">
                                 <label class="block text-xs font-bold text-slate-700 mb-1">Médico Calificador Asignado *</label>
-                                <select name="assigned_doctor" class="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 font-semibold">
-                                    <option>Dra. Marcela Restrepo (Médico Calificador Especialista)</option>
-                                    <option>Dr. Carlos Fernando Mora (Comité Médico)</option>
+                                <select name="assigned_doctor" class="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 font-semibold text-indigo-700">
+                                    {options_pcl_doc}
                                 </select>
                             </div>
                         </div>
@@ -989,14 +946,10 @@ def serve_ui(session: Optional[str] = None):
                                 <label class="block text-xs font-bold text-slate-800 mb-1" id="lbl-assignee">Seleccionar Integrante Responsable *</label>
                                 <select id="sel-assignee" name="new_assignee" class="w-full px-3 py-2 text-xs rounded-lg border bg-white font-semibold text-slate-800">
                                     <optgroup label="Integrantes del Comité Médico">
-                                        <option>Dr. Carlos Fernando Mora (Presidente Comité Médico)</option>
+                                        {options_comite_doc}
                                     </optgroup>
-                                    <optgroup label="Médicos Calificadores">
-                                        <option>Dra. Marcela Restrepo (Médico Calificador Especialista)</option>
-                                    </optgroup>
-                                    <optgroup label="Gestión y Registro">
-                                        <option>Lic. Paula Andrea Gómez (Coordinadora de Registro)</option>
-                                        <option>Ing. Javier Hernán Torres (Oficial de Notificaciones)</option>
+                                    <optgroup label="Médicos Calificadores PCL">
+                                        {options_pcl_doc}
                                     </optgroup>
                                 </select>
                             </div>
@@ -1131,15 +1084,15 @@ def serve_ui(session: Optional[str] = None):
                 const audits = data.audits;
 
                 document.getElementById('m-case-id').innerText = "ID Caso: " + c.id + " (" + c.module_state + " - " + c.sub_step + ")";
-                document.getElementById('m-patient-name').innerText = c.patient_name + " | C.C. " + c.patient_id + " | " + c.company_name;
+                document.getElementById('m-patient-name').innerText = c.patient_name + " | C.C. " + c.patient_id + " | " + (c.company_name || "NO ESPECIFICADO");
 
                 document.getElementById('d-name').innerText = c.patient_name;
                 document.getElementById('d-doc').innerText = c.document_type + " " + c.patient_id;
-                document.getElementById('d-claim').innerText = "#" + c.claim_number;
-                document.getElementById('d-company').innerText = c.company_name + (c.company_id ? " (NIT: " + c.company_id + ")" : "");
+                document.getElementById('d-claim').innerText = "#" + (c.claim_number || "PENDIENTE");
+                document.getElementById('d-company').innerText = (c.company_name || "NO ESPECIFICADO") + (c.company_id ? " (NIT: " + c.company_id + ")" : "");
                 document.getElementById('d-insurer').innerText = c.axa_filing_date ? c.axa_filing_date : "N/A";
-                document.getElementById('d-origin').innerText = c.origin_type + " - " + c.event_type + " (" + c.qualification_type + ")";
-                document.getElementById('d-it').innerText = c.it_days + " Días";
+                document.getElementById('d-origin').innerText = (c.origin_type || "Laboral") + " - " + (c.event_type || "AT") + " (" + c.qualification_type + ")";
+                document.getElementById('d-it').innerText = (c.it_days || 0) + " Días";
                 document.getElementById('d-pcl').innerText = (c.pcl_percentage !== null && c.pcl_percentage !== undefined) ? c.pcl_percentage + "%" : "--";
 
                 const hList = document.getElementById('m-history-list');
@@ -1201,7 +1154,6 @@ def serve_ui(session: Optional[str] = None):
                 const fPercentage = document.getElementById('field-percentage');
                 const fDocs = document.getElementById('field-docs');
                 const lblAssignee = document.getElementById('lbl-assignee');
-                const selAssignee = document.getElementById('sel-assignee');
 
                 if (reqAssignee) {{
                     fAssignee.classList.remove('hidden');
@@ -1212,7 +1164,6 @@ def serve_ui(session: Optional[str] = None):
                     }}
                 }} else {{
                     fAssignee.classList.add('hidden');
-                    selAssignee.value = "";
                 }}
 
                 if (reqPercentage) fPercentage.classList.remove('hidden'); else fPercentage.classList.add('hidden');
