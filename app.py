@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, Form, HTTPException, Depends
+from fastapi import FastAPI, Request, Form, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
 import uvicorn
 import io
@@ -8,7 +8,7 @@ from typing import Optional, List, Dict
 from pydantic import BaseModel
 from enum import Enum
 
-app = FastAPI(title="Sistema de Gestión PCL - Login con Contraseña")
+app = FastAPI(title="Sistema de Gestión PCL - Administración de Usuarios")
 
 # =============================================================
 # MODELOS DE DATOS Y ENUMS
@@ -44,7 +44,7 @@ class UserRole(str, Enum):
     MEDICO_CALIFICADOR = "MEDICO_CALIFICADOR"
     MEDICO_COMITE = "MEDICO_COMITE"
 
-# BASE DE DATOS DE USUARIOS (AUTENTICACIÓN POR CORREO Y CONTRASEÑA)
+# DIRECTORIO Y BASE DE DATOS DE USUARIOS
 USERS_DB: Dict[str, dict] = {
     "estiven.ayala@codess.org.co": {
         "name": "Estiven Ayala",
@@ -57,14 +57,19 @@ USERS_DB: Dict[str, dict] = {
         "role": UserRole.MEDICO_CALIFICADOR,
         "email": "medico.calificador@pcl.com",
         "password": "123456"
+    },
+    "medico.comite@pcl.com": {
+        "name": "Dr. Carlos Fernando Mora",
+        "role": UserRole.MEDICO_COMITE,
+        "email": "medico.comite@pcl.com",
+        "password": "123456"
     }
 }
 
-# ALMACENAMIENTO TEMPORAL DE SESIÓN ACTIVA EN MEMORIA
 ACTIVE_SESSIONS: Dict[str, str] = {}
 
 class PCLCase(BaseModel):
-    id: str  # ID Consecutivo: 1, 2, 3...
+    id: str
     document_type: str
     patient_id: str
     patient_name: str
@@ -91,7 +96,6 @@ class PCLCase(BaseModel):
     closing_reason: Optional[str] = None
     notes: Optional[str] = None
 
-    # CAMPOS DE TRAZABILIDAD
     fecha_asignacion_pcl: Optional[str] = None
     fecha_calificacion: Optional[str] = None
     accion_pcl: Optional[str] = None
@@ -102,7 +106,7 @@ class PCLCase(BaseModel):
     fecha_notificacion_axa: Optional[str] = None
 
 class AuditEntry(BaseModel):
-    id: str  # ID Evento: 1, 2, 3...
+    id: str
     case_id: str
     user_name: str
     user_email: str
@@ -116,7 +120,6 @@ class AuditEntry(BaseModel):
     comments: str
     assigned_to_info: Optional[str] = None
 
-# MATRIZ ESTRICTA DE TRANSICIONES
 STATE_TRANSITIONS_MATRIX = [
     {
         "current_state": ModuleState.REGISTRO, "current_sub_step": SubStep.REGISTRADO,
@@ -197,7 +200,6 @@ STATE_TRANSITIONS_MATRIX = [
     }
 ]
 
-# BASE DE DATOS INICIAL DE CASOS
 CASES_DB: List[PCLCase] = [
     PCLCase(
         id="1", document_type="Cédula de Ciudadanía", patient_id="1020485921",
@@ -232,23 +234,40 @@ AUDIT_DB: List[AuditEntry] = [
     )
 ]
 
-# LOGIN ENDPOINT
+# CREAR UN NUEVO USUARIO DESDE LA INTERFAZ
+@app.post("/api/users/create")
+def create_user(
+    name: str = Form(...),
+    email: str = Form(...),
+    password: str = Form(...),
+    role: UserRole = Form(...)
+):
+    clean_email = email.strip().lower()
+    if clean_email in USERS_DB:
+        raise HTTPException(status_code=400, detail="El correo electrónico ya se encuentra registrado.")
+    
+    USERS_DB[clean_email] = {
+        "name": name.strip(),
+        "role": role,
+        "email": clean_email,
+        "password": password.strip()
+    }
+    return {"success": True}
+
+# LOGIN
 @app.post("/login")
 def login(email: str = Form(...), password: str = Form(...)):
-    user = USERS_DB.get(email.strip().lower())
+    clean_email = email.strip().lower()
+    user = USERS_DB.get(clean_email)
     if not user or user["password"] != password.strip():
         return HTMLResponse(
             """<script>alert('Correo o contraseña incorrectos.'); window.location.href='/login-view';</script>"""
         )
     
-    # REGISTRAR SESIÓN ACTIVA
-    session_id = f"session_{email.strip().lower()}"
-    ACTIVE_SESSIONS[session_id] = email.strip().lower()
-    
-    response = RedirectResponse(url=f"/?session={session_id}", status_code=303)
-    return response
+    session_id = f"session_{clean_email}"
+    ACTIVE_SESSIONS[session_id] = clean_email
+    return RedirectResponse(url=f"/?session={session_id}", status_code=303)
 
-# VISTA FORMULARIO DE LOGIN
 @app.get("/login-view", response_class=HTMLResponse)
 def login_view():
     return """
@@ -280,49 +299,27 @@ def login_view():
                 </div>
                 <button type="submit" class="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow-md transition-all">Iniciar Sesión &rarr;</button>
             </form>
-
-            <div class="mt-6 pt-4 border-t border-slate-100 text-[11px] text-slate-500 space-y-1">
-                <div class="font-bold text-slate-700">Credenciales de Acceso:</div>
-                <div>• <strong>Admin:</strong> estiven.ayala@codess.org.co / 123456</div>
-                <div>• <strong>Médico:</strong> medico.calificador@pcl.com / 123456</div>
-            </div>
         </div>
     </body>
     </html>
     """
 
-# EXPORTACIÓN EXCEL DE ESTADOS
 @app.get("/api/export-excel-estados")
 def export_excel_estados():
     output = io.BytesIO()
     cases_data = [{
-        "ID Caso": c.id,
-        "Paciente": c.patient_name,
-        "Tipo Doc": c.document_type,
-        "N° Doc": c.patient_id,
-        "# Siniestro": c.claim_number,
-        "Origen": c.origin_type,
-        "Evento": c.event_type,
-        "Tipo Calificación": c.qualification_type,
-        "Días IT": c.it_days,
-        "Empresa": c.company_name,
-        "NIT": c.company_id or "N/A",
-        "Módulo Actual": c.module_state.value,
-        "Sub-Paso": c.sub_step.value,
-        "Responsable Asignado": c.assigned_to,
+        "ID Caso": c.id, "Paciente": c.patient_name, "Tipo Doc": c.document_type,
+        "N° Doc": c.patient_id, "# Siniestro": c.claim_number, "Origen": c.origin_type,
+        "Evento": c.event_type, "Tipo Calificación": c.qualification_type, "Días IT": c.it_days,
+        "Empresa": c.company_name, "NIT": c.company_id or "N/A", "Módulo Actual": c.module_state.value,
+        "Sub-Paso": c.sub_step.value, "Responsable Asignado": c.assigned_to,
         "% PCL Dictamen": f"{c.pcl_percentage}%" if c.pcl_percentage is not None else "--",
-        "Fecha Radicación AXA": c.axa_filing_date,
-        "Fecha creacion App": c.created_at,
-        "Fecha Asigancion PCL": c.fecha_asignacion_pcl or "N/A",
-        "Fecha Calificacion": c.fecha_calificacion or "N/A",
-        "Accion PCL": c.accion_pcl or "N/A",
-        "Fecha solicitud de documentos": c.fecha_solicitud_documentos or "N/A",
-        "Documentos solicitados": c.requested_documents or "N/A",
-        "Fecha Asignacion Comité": c.fecha_asignacion_comite or "N/A",
-        "Fecha Visado": c.fecha_visado or "N/A",
-        "Accion Comité": c.accion_comite or "N/A",
-        "Fecha Notificacion AXA": c.fecha_notificacion_axa or "N/A",
-        "Ultima Modificacion": c.updated_at
+        "Fecha Radicación AXA": c.axa_filing_date, "Fecha creacion App": c.created_at,
+        "Fecha Asigancion PCL": c.fecha_asignacion_pcl or "N/A", "Fecha Calificacion": c.fecha_calificacion or "N/A",
+        "Accion PCL": c.accion_pcl or "N/A", "Fecha solicitud de documentos": c.fecha_solicitud_documentos or "N/A",
+        "Documentos solicitados": c.requested_documents or "N/A", "Fecha Asignacion Comité": c.fecha_asignacion_comite or "N/A",
+        "Fecha Visado": c.fecha_visado or "N/A", "Accion Comité": c.accion_comite or "N/A",
+        "Fecha Notificacion AXA": c.fecha_notificacion_axa or "N/A", "Ultima Modificacion": c.updated_at
     } for c in CASES_DB]
 
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -339,18 +336,11 @@ def export_excel_estados():
 def export_excel_auditoria():
     output = io.BytesIO()
     audit_data = [{
-        "ID Evento": a.id,
-        "ID Caso": a.case_id,
-        "Fecha Exacta": a.timestamp,
-        "Usuario Responsable": a.user_name,
-        "Email": a.user_email,
-        "Rol": a.user_role,
-        "Acción Realizada": a.action,
-        "Asignado A": a.assigned_to_info or "N/A",
-        "Módulo Origen": a.origin_state,
-        "Sub-Paso Origen": a.origin_sub_step,
-        "Módulo Destino": a.destination_state,
-        "Sub-Paso Destino": a.destination_sub_step,
+        "ID Evento": a.id, "ID Caso": a.case_id, "Fecha Exacta": a.timestamp,
+        "Usuario Responsable": a.user_name, "Email": a.user_email, "Rol": a.user_role,
+        "Acción Realizada": a.action, "Asignado A": a.assigned_to_info or "N/A",
+        "Módulo Origen": a.origin_state, "Sub-Paso Origen": a.origin_sub_step,
+        "Módulo Destino": a.destination_state, "Sub-Paso Destino": a.destination_sub_step,
         "Observaciones / Motivo": a.comments
     } for a in AUDIT_DB]
 
@@ -433,10 +423,9 @@ def transition_case(
         case.fecha_notificacion_axa = now_str
 
     event_id = str(len(AUDIT_DB) + 1)
-
     audit = AuditEntry(
         id=event_id, case_id=case_id,
-        user_name=u_data["name"], user_email=u_data["email"], user_role=u_data["role"].value,
+        user_name=u_data["name"], user_email=u_data["email"], user_role=u_data["role"].value if isinstance(u_data["role"], UserRole) else str(u_data["role"]),
         action=action_name, origin_state=origin_state, destination_state=case.module_state.value,
         origin_sub_step=origin_sub_step, destination_sub_step=case.sub_step.value,
         timestamp=now_str, comments=comments, assigned_to_info=assigned_info
@@ -477,10 +466,9 @@ def create_case(
     )
 
     event_id = str(len(AUDIT_DB) + 1)
-
     audit = AuditEntry(
         id=event_id, case_id=case_id, user_name=u_data["name"],
-        user_email=u_data["email"], user_role=u_data["role"].value,
+        user_email=u_data["email"], user_role=u_data["role"].value if isinstance(u_data["role"], UserRole) else str(u_data["role"]),
         action="REGISTRAR_Y_ASIGNAR_CASO", origin_state="REGISTRO", destination_state="CALIFICACION_PCL",
         origin_sub_step="REGISTRADO", destination_sub_step="ASIGNADO", timestamp=now_str,
         comments=f"Creación formal e ingreso directo a Calificación PCL. Asignado a: {doc_assigned}.",
@@ -491,17 +479,18 @@ def create_case(
     AUDIT_DB.insert(0, audit)
     return {"success": True, "id": case_id}
 
-# FRONTEND PRINCIPAL CON AUTENTICACIÓN
+# FRONTEND PRINCIPAL
 @app.get("/", response_class=HTMLResponse)
 def serve_ui(session: Optional[str] = None):
-    # SI NO HAY SESIÓN ACTIVA, REDIRIGIR AL LOGIN
     if not session or session not in ACTIVE_SESSIONS:
         return RedirectResponse(url="/login-view")
 
     user_email = ACTIVE_SESSIONS[session]
     current_u = USERS_DB.get(user_email, USERS_DB["estiven.ayala@codess.org.co"])
     role = current_u["role"]
-    is_admin = (role == UserRole.ADMINISTRADOR)
+    is_admin = (role == UserRole.ADMINISTRADOR or role == "ADMINISTRADOR")
+    is_calificador = (role == UserRole.MEDICO_CALIFICADOR or role == "MEDICO_CALIFICADOR")
+    is_comite = (role == UserRole.MEDICO_COMITE or role == "MEDICO_COMITE")
 
     en_tramite = len([c for c in CASES_DB if c.module_state not in [ModuleState.CIERRE_ADMINISTRATIVO, ModuleState.GESTIONADO]])
     finalizados = len(CASES_DB) - en_tramite
@@ -540,6 +529,18 @@ def serve_ui(session: Optional[str] = None):
             """
         return cards
 
+    # FILAS PARA LA TABLA DE GESTIÓN DE USUARIOS
+    users_rows = ""
+    for u_mail, u_info in USERS_DB.items():
+        r_val = u_info["role"].value if isinstance(u_info["role"], UserRole) else str(u_info["role"])
+        users_rows += f"""
+        <tr class="border-b">
+            <td class="py-3 px-4 font-bold text-slate-800">{u_info["name"]}</td>
+            <td class="py-3 px-4 font-mono text-slate-600">{u_mail}</td>
+            <td class="py-3 px-4"><span class="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">{r_val}</span></td>
+        </tr>
+        """
+
     return f"""
     <!DOCTYPE html>
     <html lang="es">
@@ -559,7 +560,7 @@ def serve_ui(session: Optional[str] = None):
                         <div>
                             <div class="flex items-center gap-2">
                                 <h1 class="text-xl font-bold text-slate-900 tracking-tight">Sistema de Gestión PCL</h1>
-                                <span class="text-xs font-semibold px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200">{role.value}</span>
+                                <span class="text-xs font-semibold px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200">{role.value if isinstance(role, UserRole) else str(role)}</span>
                             </div>
                             <p class="text-xs text-slate-500 font-medium">Usuario: <strong class="text-indigo-700">{current_u['name']}</strong> ({current_u['email']})</p>
                         </div>
@@ -584,12 +585,13 @@ def serve_ui(session: Optional[str] = None):
                     <div class="flex items-center space-x-1.5">
                         {f'<button onclick="switchTab(\'mod-nuevos\')" id="btn-mod-nuevos" class="tab-btn px-3 py-2 rounded-xl text-xs font-bold bg-slate-900 text-white shadow-xs whitespace-nowrap">✨ Casos Nuevos</button>' if is_admin else ''}
                         {f'<button onclick="switchTab(\'mod-admin\')" id="btn-mod-admin" class="tab-btn px-3 py-2 rounded-xl text-xs font-bold bg-white text-slate-700 border border-slate-200 whitespace-nowrap">📁 Gestión Admin</button>' if is_admin else ''}
-                        <button onclick="switchTab('mod-calificacion')" id="btn-mod-calificacion" class="tab-btn px-3 py-2 rounded-xl text-xs font-bold {"bg-slate-900 text-white shadow-xs" if not is_admin else "bg-white text-slate-700 border border-slate-200"} whitespace-nowrap">🩺 Calificación PCL</button>
-                        {f'<button onclick="switchTab(\'mod-comite\')" id="btn-mod-comite" class="tab-btn px-3 py-2 rounded-xl text-xs font-bold bg-white text-slate-700 border border-slate-200 whitespace-nowrap">👥 Comité</button>' if is_admin else ''}
+                        {f'<button onclick="switchTab(\'mod-calificacion\')" id="btn-mod-calificacion" class="tab-btn px-3 py-2 rounded-xl text-xs font-bold {"bg-slate-900 text-white shadow-xs" if is_calificador else "bg-white text-slate-700 border border-slate-200"} whitespace-nowrap">🩺 Calificación PCL</button>' if is_admin or is_calificador else ''}
+                        {f'<button onclick="switchTab(\'mod-comite\')" id="btn-mod-comite" class="tab-btn px-3 py-2 rounded-xl text-xs font-bold {"bg-slate-900 text-white shadow-xs" if is_comite else "bg-white text-slate-700 border border-slate-200"} whitespace-nowrap">👥 Comité</button>' if is_admin or is_comite else ''}
                         {f'<button onclick="switchTab(\'mod-cierre\')" id="btn-mod-cierre" class="tab-btn px-3 py-2 rounded-xl text-xs font-bold bg-white text-slate-700 border border-slate-200 whitespace-nowrap">📤 Pendiente Cierre</button>' if is_admin else ''}
                     </div>
                     {f'''
                     <div class="flex items-center space-x-1 pl-2 border-l border-slate-200">
+                        <button onclick="switchTab('mod-usuarios')" id="btn-mod-usuarios" class="tab-btn px-2.5 py-1.5 rounded-lg text-xs font-bold bg-indigo-50 text-indigo-700 border border-indigo-200 whitespace-nowrap">⚙️ Gestión Usuarios</button>
                         <button onclick="switchTab('mod-finalizados')" id="btn-mod-finalizados" class="tab-btn px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-white text-slate-600 whitespace-nowrap">📦 Finalizados</button>
                         <button onclick="switchTab('mod-auditoria')" id="btn-mod-auditoria" class="tab-btn px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-white text-slate-600 whitespace-nowrap">📜 Auditoría General</button>
                     </div>
@@ -616,17 +618,66 @@ def serve_ui(session: Optional[str] = None):
             </div>
             ''' if is_admin else ''}
 
-            <div id="mod-calificacion" class="tab-content {"space-y-4" if not is_admin else "hidden space-y-4"}">
+            {f'''
+            <div id="mod-calificacion" class="tab-content {"space-y-4" if is_calificador else "hidden space-y-4"}">
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{render_cases_cards([ModuleState.CALIFICACION_PCL])}</div>
             </div>
+            ''' if is_admin or is_calificador else ''}
 
             {f'''
-            <div id="mod-comite" class="tab-content hidden space-y-4">
+            <div id="mod-comite" class="tab-content {"space-y-4" if is_comite else "hidden space-y-4"}">
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{render_cases_cards([ModuleState.COMITE])}</div>
             </div>
+            ''' if is_admin or is_comite else ''}
 
+            {f'''
             <div id="mod-cierre" class="tab-content hidden space-y-4">
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{render_cases_cards([ModuleState.PENDIENTE_CIERRE])}</div>
+            </div>
+
+            <div id="mod-usuarios" class="tab-content hidden space-y-6">
+                <div class="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs space-y-4">
+                    <h3 class="text-sm font-bold text-slate-900 border-b pb-2">➕ Registrar Nuevo Usuario y Asignar Permisos</h3>
+                    <form id="form-user" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
+                        <div>
+                            <label class="block font-bold text-slate-700 mb-1">Nombre Completo *</label>
+                            <input type="text" name="name" required placeholder="Ej: Dr. Roberto Gómez" class="w-full px-3 py-2 rounded-lg border border-slate-300">
+                        </div>
+                        <div>
+                            <label class="block font-bold text-slate-700 mb-1">Correo Electrónico *</label>
+                            <input type="email" name="email" required placeholder="roberto.gomez@pcl.com" class="w-full px-3 py-2 rounded-lg border border-slate-300">
+                        </div>
+                        <div>
+                            <label class="block font-bold text-slate-700 mb-1">Contraseña *</label>
+                            <input type="password" name="password" required placeholder="••••••••" class="w-full px-3 py-2 rounded-lg border border-slate-300">
+                        </div>
+                        <div>
+                            <label class="block font-bold text-slate-700 mb-1">Perfil / Rol *</label>
+                            <select name="role" class="w-full px-3 py-2 rounded-lg border border-slate-300 font-semibold text-indigo-700">
+                                <option value="MEDICO_CALIFICADOR">🩺 Médico Calificador PCL</option>
+                                <option value="MEDICO_COMITE">👥 Médico Comité</option>
+                                <option value="ADMINISTRADOR">🔑 Administrador (Acceso Total)</option>
+                            </select>
+                        </div>
+                        <div class="sm:col-span-2 lg:col-span-4 flex justify-end">
+                            <button type="submit" class="px-5 py-2 rounded-xl bg-indigo-600 text-white font-bold text-xs shadow-xs hover:bg-indigo-700">Guardar Nuevo Usuario</button>
+                        </div>
+                    </form>
+                </div>
+
+                <div class="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs">
+                    <div class="p-4 bg-slate-50 border-b">
+                        <h4 class="text-xs font-bold uppercase text-slate-700">Directorio de Usuarios Activos en el Sistema</h4>
+                    </div>
+                    <table class="w-full text-left text-xs text-slate-700">
+                        <thead class="bg-slate-50 text-[11px] uppercase font-bold border-b">
+                            <tr><th class="py-3 px-4">Usuario</th><th class="py-3 px-4">Correo Electrónico</th><th class="py-3 px-4">Perfil / Permisos</th></tr>
+                        </thead>
+                        <tbody>
+                            {users_rows}
+                        </tbody>
+                    </table>
+                </div>
             </div>
 
             <div id="mod-finalizados" class="tab-content hidden space-y-4">
@@ -999,6 +1050,23 @@ def serve_ui(session: Optional[str] = None):
                     }} else {{
                         const data = await res.json();
                         alert(data.detail || "Error al radicar el caso.");
+                    }}
+                }});
+            }}
+
+            const formUser = document.getElementById('form-user');
+            if (formUser) {{
+                formUser.addEventListener('submit', async (e) => {{
+                    e.preventDefault();
+                    const formData = new FormData(e.target);
+                    const res = await fetch('/api/users/create', {{ method: 'POST', body: formData }});
+
+                    if (res.ok) {{
+                        alert('Usuario registrado exitosamente.');
+                        window.location.reload();
+                    }} else {{
+                        const data = await res.json();
+                        alert(data.detail || "Error al registrar el usuario.");
                     }}
                 }});
             }}
