@@ -112,13 +112,14 @@ if db_init.query(UserModel).count() == 0:
 db_init.close()
 
 # =============================================================
-# APLICACIÓN FASTAPI Y ARCHIVOS ESTÁTICOS LOCALES
+# APLICACIÓN FASTAPI Y ARCHIVOS ESTÁTICOS
 # =============================================================
 
-app = FastAPI(title="Sistema de Gestión PCL - Estilos Locales")
+app = FastAPI(title="Sistema de Gestión PCL - Estilos Locales Robustos")
 
-# MONTAR LA CARPETA STATIC
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# COMPATIBILIDAD CON CARPETA STATIC SI EXISTE
+if os.path.exists("static"):
+    app.mount("/static", StaticFiles(directory="static"), name="static")
 
 ACTIVE_SESSIONS: Dict[str, str] = {}
 
@@ -232,6 +233,30 @@ STATE_TRANSITIONS_MATRIX = [
     }
 ]
 
+# BLOQUE CSS DE FALLBACK Y PALETA SLATE PARA EVITAR PERDIDA DE FORMATO POR RED LENTA
+CSS_INLINE_FALLBACK = """
+<style>
+    body { font-family: system-ui, -apple-system, sans-serif; }
+    .bg-slate-900 { background-color: #0f172a !important; color: #ffffff !important; }
+    .bg-slate-800 { background-color: #1e293b !important; color: #ffffff !important; }
+    .bg-slate-100 { background-color: #f1f5f9 !important; }
+    .bg-slate-50 { background-color: #f8fafc !important; }
+    .text-slate-900 { color: #0f172a !important; }
+    .text-slate-800 { color: #1e293b !important; }
+    .text-slate-700 { color: #334155 !important; }
+    .text-slate-600 { color: #475569 !important; }
+    .text-slate-500 { color: #64748b !important; }
+    .text-slate-300 { color: #cbd5e1 !important; }
+    .text-indigo-700 { color: #4338ca !important; }
+    .text-indigo-900 { color: #312e81 !important; }
+    .bg-indigo-600 { background-color: #4f46e5 !important; color: #ffffff !important; }
+    .bg-indigo-700 { background-color: #4338ca !important; color: #ffffff !important; }
+    .bg-indigo-50 { background-color: #eep2ff !important; }
+    .border-slate-200 { border-color: #e2e8f0 !important; }
+    .border-slate-300 { border-color: #cbd5e1 !important; }
+</style>
+"""
+
 # API USUARIOS - CREAR
 @app.post("/api/users/create")
 def create_user(
@@ -316,13 +341,14 @@ def login(email: str = Form(...), password: str = Form(...)):
 
 @app.get("/login-view", response_class=HTMLResponse)
 def login_view():
-    return """
+    return f"""
     <!DOCTYPE html>
     <html lang="es">
     <head>
         <meta charset="UTF-8">
         <title>Inicio de Sesión - Sistema de Gestión PCL</title>
         <link href="/static/tailwind.min.css" rel="stylesheet">
+        {CSS_INLINE_FALLBACK}
     </head>
     <body class="bg-slate-900 flex items-center justify-center min-h-screen p-4">
         <div class="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-md border border-slate-200">
@@ -579,7 +605,7 @@ def create_case(
     db.close()
     return {"success": True, "id": created_id}
 
-# FRONTEND PRINCIPAL CON CSS LOCAL
+# FRONTEND PRINCIPAL
 @app.get("/", response_class=HTMLResponse)
 def serve_ui(session: Optional[str] = None):
     if not session or session not in ACTIVE_SESSIONS:
@@ -676,6 +702,7 @@ def serve_ui(session: Optional[str] = None):
         <meta charset="UTF-8">
         <title>Sistema de Gestión PCL</title>
         <link href="/static/tailwind.min.css" rel="stylesheet">
+        {CSS_INLINE_FALLBACK}
     </head>
     <body class="bg-slate-100 text-slate-900 min-h-screen flex flex-col">
         <header class="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-xs">
