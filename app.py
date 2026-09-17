@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Optional, List, Dict
 from fastapi import FastAPI, Request, Form, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 import uvicorn
 from pydantic import BaseModel
 from enum import Enum
@@ -111,10 +112,13 @@ if db_init.query(UserModel).count() == 0:
 db_init.close()
 
 # =============================================================
-# APLICACIÓN FASTAPI Y LÓGICA DE NEGOCIO
+# APLICACIÓN FASTAPI Y ARCHIVOS ESTÁTICOS LOCALES
 # =============================================================
 
-app = FastAPI(title="Sistema de Gestión PCL - Edición de Contraseñas")
+app = FastAPI(title="Sistema de Gestión PCL - Estilos Locales")
+
+# MONTAR LA CARPETA STATIC
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 ACTIVE_SESSIONS: Dict[str, str] = {}
 
@@ -318,9 +322,7 @@ def login_view():
     <head>
         <meta charset="UTF-8">
         <title>Inicio de Sesión - Sistema de Gestión PCL</title>
-        <script src="https://cdn.tailwindcss.com"></script>
-        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-        <style> body { font-family: 'Inter', sans-serif; } </style>
+        <link href="/static/tailwind.min.css" rel="stylesheet">
     </head>
     <body class="bg-slate-900 flex items-center justify-center min-h-screen p-4">
         <div class="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-md border border-slate-200">
@@ -577,7 +579,7 @@ def create_case(
     db.close()
     return {"success": True, "id": created_id}
 
-# FRONTEND PRINCIPAL
+# FRONTEND PRINCIPAL CON CSS LOCAL
 @app.get("/", response_class=HTMLResponse)
 def serve_ui(session: Optional[str] = None):
     if not session or session not in ACTIVE_SESSIONS:
@@ -604,7 +606,6 @@ def serve_ui(session: Optional[str] = None):
     audits = db.query(AuditModel).order_by(AuditModel.id.desc()).all()
     users = db.query(UserModel).all()
 
-    # MEDICOS EXCLUSIVOS POR ROL (EXCLUYE ADMINISTRADORES)
     medicos_pcl_db = [u.name for u in users if u.role == "MEDICO_CALIFICADOR"]
     medicos_comite_db = [u.name for u in users if u.role == "MEDICO_COMITE"]
 
@@ -674,9 +675,7 @@ def serve_ui(session: Optional[str] = None):
     <head>
         <meta charset="UTF-8">
         <title>Sistema de Gestión PCL</title>
-        <script src="https://cdn.tailwindcss.com"></script>
-        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-        <style> body {{ font-family: 'Inter', sans-serif; }} </style>
+        <link href="/static/tailwind.min.css" rel="stylesheet">
     </head>
     <body class="bg-slate-100 text-slate-900 min-h-screen flex flex-col">
         <header class="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-xs">
