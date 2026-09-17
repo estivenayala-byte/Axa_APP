@@ -117,7 +117,6 @@ db_init.close()
 
 app = FastAPI(title="Sistema de Gestión PCL - Estilos Locales Robustos")
 
-# COMPATIBILIDAD CON CARPETA STATIC SI EXISTE
 if os.path.exists("static"):
     app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -233,7 +232,7 @@ STATE_TRANSITIONS_MATRIX = [
     }
 ]
 
-# BLOQUE CSS DE FALLBACK Y PALETA SLATE PARA EVITAR PERDIDA DE FORMATO POR RED LENTA
+# BLOQUE CSS DE FALLBACK COMPLETO (INCLUYE BOTON ESMERALDA EXCEL)
 CSS_INLINE_FALLBACK = """
 <style>
     body { font-family: system-ui, -apple-system, sans-serif; }
@@ -251,7 +250,10 @@ CSS_INLINE_FALLBACK = """
     .text-indigo-900 { color: #312e81 !important; }
     .bg-indigo-600 { background-color: #4f46e5 !important; color: #ffffff !important; }
     .bg-indigo-700 { background-color: #4338ca !important; color: #ffffff !important; }
-    .bg-indigo-50 { background-color: #eep2ff !important; }
+    .bg-indigo-800 { background-color: #3730a3 !important; color: #ffffff !important; }
+    .bg-indigo-50 { background-color: #e0e7ff !important; }
+    .bg-emerald-600 { background-color: #059669 !important; color: #ffffff !important; }
+    .bg-emerald-700 { background-color: #047857 !important; color: #ffffff !important; }
     .border-slate-200 { border-color: #e2e8f0 !important; }
     .border-slate-300 { border-color: #cbd5e1 !important; }
 </style>
